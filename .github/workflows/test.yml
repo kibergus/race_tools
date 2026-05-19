@@ -1,0 +1,45 @@
+name: Python Tests and Linting
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[dev]
+
+    - name: Run Flake8 linter
+      run: |
+        flake8 race_tools tests
+
+    - name: Run Pytest suite
+      run: |
+        pytest
+
+    - name: Build package (sdist and wheel)
+      run: |
+        python -m build
+
+    - name: Verify package distribution integrity
+      run: |
+        twine check dist/*
