@@ -22,7 +22,9 @@ import subprocess
 from playwright.async_api import async_playwright
 
 # Add project root to sys.path
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+PROJECT_ROOT = os.environ.get('PROJECT_ROOT')
+if not PROJECT_ROOT:
+    raise KeyError("PROJECT_ROOT environment variable is not set")
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from race_tools.sanitize import clean_slug  # noqa: E402
 
@@ -58,12 +60,10 @@ def reprocess_track(track_name: str):
         return
 
     print(f'Re-processing track data from {os.path.basename(aiw_file)}...')
-    env = os.environ.copy()
-    env['PYTHONPATH'] = os.path.join(PROJECT_ROOT, 'race_tools')
 
     try:
         # We assume the current python has the necessary dependencies (pandas, etc.)
-        subprocess.run([sys.executable, PARSE_AIW_SCRIPT, aiw_file], env=env, check=True)
+        subprocess.run([sys.executable, PARSE_AIW_SCRIPT, aiw_file], check=True)
     except subprocess.CalledProcessError as e:
         print(f'Error during re-processing: {e}')
         sys.exit(1)

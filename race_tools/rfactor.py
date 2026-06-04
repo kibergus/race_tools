@@ -44,35 +44,30 @@ TRACK_ORIGINS = {
     'Ellough Park': TrackOrigin(
         52.4277, 1.5833,
         Correction(north_m=692, east_m=1198, angle_deg=-2.5)),
-    # TODO: correction.
     'Forest Edge': TrackOrigin(
         51.1802778, -1.36166,
         Correction(north_m=-45.0, east_m=-141.0, angle_deg=0.0)),
     'Fulbeck': TrackOrigin(
         53.045268, -0.656013,
         Correction(north_m=-21.0, east_m=-55.0, angle_deg=0.0)),
-    # TODO
     'Glan Y Gors': TrackOrigin(
         53.035557, -3.582806,
-        Correction(north_m=0, east_m=0, angle_deg=0)),
-    # TODO
+        Correction(north_m=-94, east_m=-61, angle_deg=2)),
     'Hooton Park': TrackOrigin(
         53.31, -2.941,
-        Correction(north_m=0, east_m=0, angle_deg=0)),
-    # TODO
+        Correction(north_m=5, east_m=-36, angle_deg=0)),
     'Kimbolton': TrackOrigin(
         52.315824875017825, -0.36923284525509625,
-        Correction(north_m=0, east_m=0, angle_deg=0)),
+        Correction(north_m=-30, east_m=-68, angle_deg=-1.5)),
     'Larkhall': TrackOrigin(
         55.752193, -3.978246,
         Correction(north_m=-5, east_m=-16, angle_deg=0)),
     'Llandow': TrackOrigin(
         51.434, -3.498,
         Correction(north_m=-42, east_m=162, angle_deg=-1)),
-    # TODO
     'Lydd': TrackOrigin(
         50.93515747693628, 0.9073052129051091,
-        Correction(north_m=0, east_m=0, angle_deg=0)),
+        Correction(north_m=-98, east_m=-16, angle_deg=0)),
     # TODO
     'Nutts Corner': TrackOrigin(
         54.62, -6.14,
