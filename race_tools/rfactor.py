@@ -5,6 +5,7 @@ Handles the conversion between rFactor's Cartesian (meters) coordinate system an
 import math
 import re
 from dataclasses import dataclass, field
+from race_tools import sanitize
 
 
 @dataclass
@@ -131,12 +132,9 @@ def get_track_origin(track_name: str | None) -> TrackOrigin:
     if not track_name:
         raise ValueError('Track name is missing or empty.')
 
-    def normalize(s: str) -> str:
-        return re.sub(r'[^a-z0-9]', '', s.lower())
-
-    norm_track_name = normalize(track_name)
+    norm_track_name = sanitize.normalize(track_name)
     for name, origin in TRACK_ORIGINS.items():
-        norm_name = normalize(name)
+        norm_name = sanitize.normalize(name)
         if norm_name and (norm_name in norm_track_name or norm_track_name in norm_name):
             return origin
 

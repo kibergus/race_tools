@@ -236,7 +236,7 @@ def write_telemetry_to_csv(
             record_count,
             timestamp_str,
             f'{lat:.8f}', f'{lon:.8f}', f'{y:.2f}',
-            f'{speed_ms:.2f}',
+            f'{speed_ms:.5f}',
             f'{g_lat:.3f}', f'{g_lon:.3f}', f'{g_vert:.3f}',
             f'{throttle:.1f}', f'{brake:.1f}',
             f'{wheel_angle_deg:.1f}',

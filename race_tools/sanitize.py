@@ -80,6 +80,29 @@ def parse_time(time_str: str | float | None) -> float | None:
         return None
 
 
+def format_time(seconds: float | None) -> str:
+    """
+    Formats float seconds back to standard lap time string (MM:SS.sss or SS.sss).
+
+    Args:
+        seconds: The time in seconds.
+
+    Returns:
+        The formatted time string.
+    """
+    if seconds is None or pd.isna(seconds):
+        return ""
+    if seconds == 0.0:
+        return "0.000"
+    minutes = int(seconds // 60)
+    rem_seconds = seconds % 60
+    if minutes > 0:
+        return f"{minutes}:{rem_seconds:06.3f}"
+    else:
+        return f"{rem_seconds:.3f}"
+
+
+
 def is_final_session(session_name: str) -> bool:
     """
     Checks if a session is a final or a heat.
@@ -105,3 +128,11 @@ def clean_slug(s: str) -> str:
         A clean slug string.
     """
     return re.sub(r'[^a-z0-9]+', '_', s.lower()).strip('_')
+
+
+def normalize(s: str) -> str:
+    """
+    Standard alphanumeric normalization for fuzzy string matching (lowercase, removes all non-alphanumeric chars).
+    """
+    return re.sub(r'[^a-z0-9]', '', s.lower())
+
