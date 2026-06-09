@@ -1,0 +1,25 @@
+{
+    "car_name_regexp": ".*",
+    "league": "kartsim",
+    "sinks": [
+        {
+            "type": "file",
+            "path": ""
+        },
+        {
+            "type": "http",
+            "server_address": "http://127.0.0.1:8080",
+            "api_key": "your-api-key-here"
+        }
+    ],
+    "driver_name_overrides": [
+        {
+            "car_name_regexp": "#8",
+            "driver_name": "Test Driver"
+        },
+        {
+            "car_name_regexp": "#9",
+            "driver_name": "Second Driver"
+        }
+    ]
+}

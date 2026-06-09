@@ -43,7 +43,6 @@ coverage.xml
 .cache
 
 # IDE / Editor Files
-.vscode/
 .idea/
 *.swp
 *.swo
