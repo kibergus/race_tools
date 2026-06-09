@@ -3,7 +3,6 @@ rFactor coordinate conversion utilities.
 Handles the conversion between rFactor's Cartesian (meters) coordinate system and GPS (WGS84).
 """
 import math
-import re
 from dataclasses import dataclass, field
 from race_tools import sanitize
 

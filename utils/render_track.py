@@ -24,7 +24,7 @@ from playwright.async_api import async_playwright
 # Add project root to sys.path
 PROJECT_ROOT = os.environ.get('PROJECT_ROOT')
 if not PROJECT_ROOT:
-    raise KeyError("PROJECT_ROOT environment variable is not set")
+    raise KeyError('PROJECT_ROOT environment variable is not set')
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from race_tools.sanitize import clean_slug  # noqa: E402
 

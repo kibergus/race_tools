@@ -91,16 +91,15 @@ def format_time(seconds: float | None) -> str:
         The formatted time string.
     """
     if seconds is None or pd.isna(seconds):
-        return ""
+        return ''
     if seconds == 0.0:
-        return "0.000"
+        return '0.000'
     minutes = int(seconds // 60)
     rem_seconds = seconds % 60
     if minutes > 0:
-        return f"{minutes}:{rem_seconds:06.3f}"
+        return f'{minutes}:{rem_seconds:06.3f}'
     else:
-        return f"{rem_seconds:.3f}"
-
+        return f'{rem_seconds:.3f}'
 
 
 def is_final_session(session_name: str) -> bool:
@@ -135,4 +134,3 @@ def normalize(s: str) -> str:
     Standard alphanumeric normalization for fuzzy string matching (lowercase, removes all non-alphanumeric chars).
     """
     return re.sub(r'[^a-z0-9]', '', s.lower())
-
