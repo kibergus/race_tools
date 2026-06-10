@@ -35,7 +35,7 @@ AIW_UNPACKED_DIR = os.path.join(PROJECT_ROOT, 'karting/track_extractor/unpacked'
 PARSE_AIW_SCRIPT = os.path.join(PROJECT_ROOT, 'karting/track_extractor/parse_aiw.py')
 
 
-def reprocess_track(track_name: str):
+def reprocess_track(track_name: str) -> None:
     """
     Finds the corresponding .AIW file and re-runs parse_aiw.py to update GeoJSON.
     """
@@ -62,11 +62,32 @@ def reprocess_track(track_name: str):
     print(f'Re-processing track data from {os.path.basename(aiw_file)}...')
 
     try:
-        # We assume the current python has the necessary dependencies (pandas, etc.)
         subprocess.run([sys.executable, PARSE_AIW_SCRIPT, aiw_file], check=True)
     except subprocess.CalledProcessError as e:
         print(f'Error during re-processing: {e}')
         sys.exit(1)
+
+
+def resolve_geojson_by_alias(track_name: str) -> str | None:
+    """
+    Scans all track JSON sidecar files in TRACK_DATA_DIR for one whose `aliases` list
+    contains track_name (case-insensitive). Returns the corresponding .geojson path, or None.
+    """
+    norm = track_name.strip().lower()
+    if not os.path.exists(TRACK_DATA_DIR):
+        return None
+    for f in os.listdir(TRACK_DATA_DIR):
+        if not f.endswith('.json'):
+            continue
+        json_path = os.path.join(TRACK_DATA_DIR, f)
+        with open(json_path, 'r') as fh:
+            data = json.load(fh)
+        aliases = data.get('aliases', [])
+        if any(a.strip().lower() == norm for a in aliases):
+            geojson_path = json_path.replace('.json', '.geojson')
+            if os.path.exists(geojson_path):
+                return geojson_path
+    return None
 
 
 async def render_track_async(track_name: str) -> str:
@@ -81,15 +102,21 @@ async def render_track_async(track_name: str) -> str:
     geojson_path = os.path.join(TRACK_DATA_DIR, f'{slug}.geojson')
 
     if not os.path.exists(geojson_path):
-        found = False
-        for f in os.listdir(TRACK_DATA_DIR):
-            if slug in f and f.endswith('.geojson'):
-                geojson_path = os.path.join(TRACK_DATA_DIR, f)
-                slug = f.replace('.geojson', '')
-                found = True
-                break
-        if not found:
-            raise FileNotFoundError(f'Could not find GeoJSON for track: {track_name}')
+        # Try alias lookup via JSON sidecar files (e.g. "PFI" -> paul_fletcher_international_pro_2026)
+        resolved = resolve_geojson_by_alias(track_name)
+        if resolved:
+            geojson_path = resolved
+            slug = os.path.basename(resolved).replace('.geojson', '')
+        else:
+            found = False
+            for f in os.listdir(TRACK_DATA_DIR):
+                if slug in f and f.endswith('.geojson'):
+                    geojson_path = os.path.join(TRACK_DATA_DIR, f)
+                    slug = f.replace('.geojson', '')
+                    found = True
+                    break
+            if not found:
+                raise FileNotFoundError(f'Could not find GeoJSON for track: {track_name}')
 
     with open(geojson_path, 'r') as f:
         geojson_data = json.load(f)

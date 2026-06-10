@@ -67,18 +67,15 @@ TRACK_ORIGINS = {
     'Lydd': TrackOrigin(
         50.93515747693628, 0.9073052129051091,
         Correction(north_m=-98, east_m=-16, angle_deg=0)),
-    # TODO
     'Nutts Corner': TrackOrigin(
-        54.62, -6.14,
-        Correction(north_m=0, east_m=0, angle_deg=0)),
-    # TODO
+        54.62245248013883, -6.145107376760258,
+        Correction(north_m=-70, east_m=-65, angle_deg=0)),
     'PFI': TrackOrigin(
-        52.9158, -0.6389,
-        Correction(north_m=0, east_m=0, angle_deg=0)),
-    # TODO
+        53.038403944190826, -0.6612882809870662,
+        Correction(north_m=-5, east_m=27, angle_deg=-0.5)),
     'Red Lodge': TrackOrigin(
         52.295, 0.478,
-        Correction(north_m=60, east_m=-15, angle_deg=-2.0)),
+        Correction(north_m=62, east_m=-14, angle_deg=-2.0)),
     'Rissington': TrackOrigin(
         51.87, -1.69,
         Correction(north_m=-512, east_m=315, angle_deg=0)),
@@ -91,18 +88,15 @@ TRACK_ORIGINS = {
     'Shenington': TrackOrigin(
         52.08, -1.47,
         Correction(north_m=165.5, east_m=-419, angle_deg=0.7)),
-    # TODO
     'Teesside': TrackOrigin(
         54.58, -1.19,
-        Correction(north_m=0, east_m=0, angle_deg=0)),
-    # TODO
+        Correction(north_m=-257, east_m=40, angle_deg=0)),
     'Three Sisters': TrackOrigin(
-        53.5, -2.63,
-        Correction(north_m=0, east_m=0, angle_deg=0)),
-    # TODO
+        53.50690336837593, -2.632337509845641,
+        Correction(north_m=-43, east_m=-35, angle_deg=0)),
     'Warden Law': TrackOrigin(
-        54.8368, -1.4116,
-        Correction(north_m=0, east_m=0, angle_deg=0)),
+        54.84856307661587, -1.423336782654707,
+        Correction(north_m=1, east_m=3, angle_deg=-0.5)),
     'Whilton Mill': TrackOrigin(
         52.28, -1.09,
         Correction(north_m=-413, east_m=79, angle_deg=-1)),
