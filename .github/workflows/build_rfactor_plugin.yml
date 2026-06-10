@@ -1,0 +1,70 @@
+name: Build rFactor Plugin
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'rfactor_plugin/**'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'rfactor_plugin/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4.2.2
+
+    - name: Configure CMake
+      working-directory: rfactor_plugin
+      run: cmake -S . -B build -A x64
+
+    - name: Build C++ plugin DLL (Release)
+      working-directory: rfactor_plugin
+      run: cmake --build build --config Release --target BrBrDbTelemetry
+
+    - name: Build C++ unit tests (Release)
+      working-directory: rfactor_plugin
+      run: cmake --build build --config Release --target unit_tests
+
+    - name: Run C++ unit tests via CTest
+      working-directory: rfactor_plugin
+      run: |
+        Copy-Item BrBrTelemetry.test.json -Destination build\bin\Release\BrBrDbTelemetry.json -Force
+        ctest --test-dir build -C Release --output-on-failure
+
+    - name: Compile C# WinForms installer
+      working-directory: rfactor_plugin
+      shell: pwsh
+      run: |
+        $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+        if (-not (Test-Path $csc)) {
+          Write-Error "csc.exe not found at $csc"
+          exit 1
+        }
+        $dll = "build\bin\Release\BrBrDbTelemetry64.dll"
+        if (-not (Test-Path $dll)) {
+          Write-Error "Plugin DLL not found at $dll"
+          exit 1
+        }
+        & $csc /target:winexe `
+          /out:install\BrBrDbTelemetryInstaller.exe `
+          /resource:$dll `
+          /r:System.Windows.Forms.dll `
+          /r:System.Drawing.dll `
+          /r:System.dll `
+          install\Program.cs `
+          install\InstallManager.cs `
+          install\ConfigHelper.cs `
+          install\InstallerForm.cs
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Upload installer EXE
+      uses: actions/upload-artifact@v4
+      with:
+        name: BrBrDbTelemetryInstaller-exe
+        path: rfactor_plugin/install/BrBrDbTelemetryInstaller.exe
+        if-no-files-found: error
