@@ -93,7 +93,7 @@ void UploadBufferWinHttp(const std::string& data, const std::string& serverAddre
     throw std::runtime_error("WinHttpOpen failed (error code " + std::to_string(GetLastError()) + ")");
   }
 
-  WinHttpSetTimeouts(hSession, 10000, 10000, 30000, 30000);
+  WinHttpSetTimeouts(hSession, 10000, 10000, 0, 0);
 
   WinHttpHandle hConnect = WinHttpConnect(hSession, addrInfo.host.c_str(), addrInfo.port, 0);
   if (!hConnect) {
@@ -214,12 +214,21 @@ void FileSink::operator()(const EndSession& end) {
 }
 
 HttpSink::HttpSink(const std::string& serverAddress, const std::string& apiKey, Logger& logger, std::atomic<int>& activeUploads,
-                   std::chrono::seconds bufferDuration, std::chrono::seconds backoffWindow, int maxBackoffAttempts)
+                   std::chrono::seconds bufferDuration, std::chrono::seconds backoffWindow, int maxBackoffAttempts,
+                   std::chrono::seconds maxConnectionDuration)
     : serverAddress_(serverAddress), apiKey_(apiKey), logger_(logger), activeUploads_(activeUploads),
-      bufferDuration_(bufferDuration), backoff_(backoffWindow, maxBackoffAttempts) {}
+      bufferDuration_(bufferDuration), backoff_(backoffWindow, maxBackoffAttempts),
+      maxConnectionDuration_(maxConnectionDuration) {}
 
 HttpSink::~HttpSink() {
   Disconnect();
+}
+
+void HttpSink::Abort() {
+  HINTERNET hReq = hRequest_;
+  if (hReq) {
+    WinHttpCloseHandle(hReq);
+  }
 }
 
 void HttpSink::operator()(const StartSession& start) {
@@ -245,6 +254,14 @@ void HttpSink::operator()(const Line& line) {
     }
   }
 
+  if (connected_) {
+    if (now - lastConnectTime_ >= maxConnectionDuration_) {
+      logger_.Write("HttpSink - Proactively rolling over connection (active for " +
+                    std::to_string(std::chrono::duration_cast<std::chrono::seconds>(now - lastConnectTime_).count()) + "s)");
+      Finalize();
+    }
+  }
+
   if (!connected_) {
     if (backoff_.CanAttempt(now)) {
       backoff_.RecordAttempt(now);
@@ -259,6 +276,7 @@ void HttpSink::operator()(const Line& line) {
               WriteChunk(buffer_[i].text);
             }
           }
+          backoff_.Reset(); // Reset backoff since connection and data write succeeded
         } catch (const std::exception& e) {
           logger_.Write(std::string("HttpSink - Failed to write headers/buffer after reconnect: ") + e.what());
           Disconnect();
@@ -278,49 +296,60 @@ void HttpSink::operator()(const Line& line) {
   }
 }
 
+bool HttpSink::Finalize() {
+  if (!connected_) return false;
+
+  bool success = false;
+  try {
+    WriteFinalChunk();
+
+    if (!WinHttpReceiveResponse(hRequest_, NULL)) {
+      throw std::runtime_error("WinHttpReceiveResponse failed (error code " + std::to_string(GetLastError()) + ")");
+    }
+
+    DWORD statusCode = 0;
+    DWORD statusCodeSize = sizeof(statusCode);
+    if (!WinHttpQueryHeaders(hRequest_, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX)) {
+      throw std::runtime_error("Failed to query HTTP status code (error code " + std::to_string(GetLastError()) + ")");
+    }
+
+    if (statusCode != 200) {
+      std::string responseBody;
+      DWORD bytesAvailable = 0;
+      if (WinHttpQueryDataAvailable(hRequest_, &bytesAvailable) && bytesAvailable > 0) {
+        std::vector<char> respBuf(bytesAvailable + 1, 0);
+        DWORD bytesRead = 0;
+        if (WinHttpReadData(hRequest_, respBuf.data(), bytesAvailable, &bytesRead)) {
+          responseBody = std::string(respBuf.data(), bytesRead);
+        }
+      }
+      std::string err = "Server returned status code " + std::to_string(statusCode);
+      if (!responseBody.empty()) {
+        err += " - Response: " + responseBody;
+      }
+      throw std::runtime_error(err);
+    }
+    success = true;
+  } catch (const std::exception& e) {
+    logger_.Write("HttpSink - Streaming finalization failed: " + std::string(e.what()));
+  }
+
+  Disconnect();
+  return success;
+}
+
 void HttpSink::operator()(const EndSession& end) {
   (void)end;
   if (connected_) {
     logger_.Write("HttpSink - Session ended, finalizing stream to " + serverAddress_);
-    try {
-      WriteFinalChunk();
-
-      if (!WinHttpReceiveResponse(hRequest_, NULL)) {
-        throw std::runtime_error("WinHttpReceiveResponse failed (error code " + std::to_string(GetLastError()) + ")");
-      }
-
-      DWORD statusCode = 0;
-      DWORD statusCodeSize = sizeof(statusCode);
-      if (!WinHttpQueryHeaders(hRequest_, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                               WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX)) {
-        throw std::runtime_error("Failed to query HTTP status code (error code " + std::to_string(GetLastError()) + ")");
-      }
-
-      if (statusCode != 200) {
-        std::string responseBody;
-        DWORD bytesAvailable = 0;
-        if (WinHttpQueryDataAvailable(hRequest_, &bytesAvailable) && bytesAvailable > 0) {
-          std::vector<char> respBuf(bytesAvailable + 1, 0);
-          DWORD bytesRead = 0;
-          if (WinHttpReadData(hRequest_, respBuf.data(), bytesAvailable, &bytesRead)) {
-            responseBody = std::string(respBuf.data(), bytesRead);
-          }
-        }
-        std::string err = "Server returned status code " + std::to_string(statusCode);
-        if (!responseBody.empty()) {
-          err += " - Response: " + responseBody;
-        }
-        throw std::runtime_error(err);
-      }
+    if (Finalize()) {
       logger_.Write("HttpSink - Streaming finished successfully, session finalized.");
-    } catch (const std::exception& e) {
-      logger_.Write("HttpSink - Streaming finalization failed: " + std::string(e.what()));
     }
   } else {
     logger_.Write("HttpSink - Session ended but not connected. Stream could not be finalized.");
+    Disconnect();
   }
-
-  Disconnect();
 }
 
 bool HttpSink::Connect() {
@@ -335,7 +364,7 @@ bool HttpSink::Connect() {
       throw std::runtime_error("WinHttpOpen failed (error code " + std::to_string(GetLastError()) + ")");
     }
 
-    WinHttpSetTimeouts(hSession_, 10000, 10000, 30000, 30000);
+    WinHttpSetTimeouts(hSession_, 10000, 10000, 0, 0);
 
     hConnect_ = WinHttpConnect(hSession_, addrInfo.host.c_str(), addrInfo.port, 0);
     if (!hConnect_) {
@@ -367,6 +396,7 @@ bool HttpSink::Connect() {
     }
 
     connected_ = true;
+    lastConnectTime_ = std::chrono::steady_clock::now();
     activeUploads_++;
     logger_.Write("HttpSink - Connected to " + serverAddress_);
     return true;
@@ -423,6 +453,9 @@ SinkWorker::SinkWorker(std::unique_ptr<Sink> sink, SafeQueue<Sink::Message>::Rea
 
 SinkWorker::~SinkWorker() {
   active_ = false;
+  if (sink_) {
+    sink_->Abort();
+  }
   if (thread_.joinable()) {
     thread_.join();
   }

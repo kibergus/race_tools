@@ -71,6 +71,8 @@ public:
   virtual void operator()(const Line& line) = 0;
   virtual void operator()(const EndSession& end) = 0;
 
+  virtual void Abort() {}
+
   virtual ~Sink() = default;
 };
 
@@ -95,11 +97,14 @@ public:
   HttpSink(const std::string& serverAddress, const std::string& apiKey, Logger& logger, std::atomic<int>& activeUploads,
            std::chrono::seconds bufferDuration = std::chrono::minutes(5),
            std::chrono::seconds backoffWindow = std::chrono::minutes(5),
-           int maxBackoffAttempts = 6);
+           int maxBackoffAttempts = 6,
+           std::chrono::seconds maxConnectionDuration = std::chrono::minutes(2));
 
   virtual void operator()(const StartSession& start) override;
   virtual void operator()(const Line& line) override;
   virtual void operator()(const EndSession& end) override;
+
+  virtual void Abort() override;
 
   virtual ~HttpSink() override;
 private:
@@ -129,12 +134,15 @@ private:
 
   // Reconnection tracking
   RetryBackoff backoff_;
+  std::chrono::steady_clock::time_point lastConnectTime_;
+  std::chrono::seconds maxConnectionDuration_;
 
   // Helpers
   bool Connect();
   void Disconnect();
   void WriteChunk(const std::string& data);
   void WriteFinalChunk();
+  bool Finalize();
 };
 
 // Runs a background thread that pops telemetry messages from a queue reader and
