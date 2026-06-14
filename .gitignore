@@ -44,12 +44,16 @@ coverage.xml
 
 # IDE / Editor Files
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
 .project
 .pydevproject
 .settings/
+
+# Compiled Binaries & Installers
+rfactor_plugin/install/BrBrDbTelemetryInstaller.exe
 
 # OS Specific
 .DS_Store

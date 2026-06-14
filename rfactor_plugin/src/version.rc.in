@@ -1,8 +1,8 @@
 #include <winres.h>
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,1,1,0
- PRODUCTVERSION 1,1,1,0
+ FILEVERSION @VERSION_MAJOR@,@VERSION_MINOR@,@VERSION_PATCH@,@VERSION_BUILD@
+ PRODUCTVERSION @VERSION_MAJOR@,@VERSION_MINOR@,@VERSION_PATCH@,@VERSION_BUILD@
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -19,12 +19,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Alexey Guseynov"
             VALUE "FileDescription", "BrBrDb Telemetry Plugin"
-            VALUE "FileVersion", "1.1.1.0"
+            VALUE "FileVersion", "@VERSION_MAJOR@.@VERSION_MINOR@.@VERSION_PATCH@.@VERSION_BUILD@"
             VALUE "InternalName", "BrBrDbTelemetry64.dll"
             VALUE "LegalCopyright", "Copyright (C) Alexey Guseynov 2026"
             VALUE "OriginalFilename", "BrBrDbTelemetry64.dll"
             VALUE "ProductName", "BrBrDbTelemetry"
-            VALUE "ProductVersion", "1.1.1.0"
+            VALUE "ProductVersion", "@VERSION_MAJOR@.@VERSION_MINOR@.@VERSION_PATCH@.@VERSION_BUILD@"
         END
     END
     BLOCK "VarFileInfo"

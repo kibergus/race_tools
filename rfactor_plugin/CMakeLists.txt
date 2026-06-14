@@ -5,6 +5,59 @@ project(BrBrDbTelemetry VERSION 1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Determine version from Git
+find_package(Git QUIET)
+
+set(VERSION_MAJOR 1)
+set(VERSION_MINOR 0)
+set(VERSION_PATCH 0)
+set(VERSION_BUILD 0)
+
+if(GIT_FOUND)
+    # Fallback to total commits if no tag is found
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-list --count HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_COMMIT_COUNT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(GIT_COMMIT_COUNT)
+        set(VERSION_BUILD ${GIT_COMMIT_COUNT})
+    endif()
+
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --tags --match "v[0-9]*" --long --always
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_DESCRIBE_OUT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+
+    if(GIT_DESCRIBE_OUT)
+        if(GIT_DESCRIBE_OUT MATCHES "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)-([0-9]+)-g([0-9a-f]+)")
+            set(VERSION_MAJOR "${CMAKE_MATCH_1}")
+            set(VERSION_MINOR "${CMAKE_MATCH_2}")
+            set(VERSION_PATCH "${CMAKE_MATCH_3}")
+            set(VERSION_BUILD "${CMAKE_MATCH_4}")
+        elseif(GIT_DESCRIBE_OUT MATCHES "^v?([0-9]+)\\.([0-9]+)-([0-9]+)-g([0-9a-f]+)")
+            set(VERSION_MAJOR "${CMAKE_MATCH_1}")
+            set(VERSION_MINOR "${CMAKE_MATCH_2}")
+            set(VERSION_PATCH "0")
+            set(VERSION_BUILD "${CMAKE_MATCH_3}")
+        endif()
+    endif()
+endif()
+
+message(STATUS "Building plugin version ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}.${VERSION_BUILD}")
+
+# Generate version.rc from template
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/version.rc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/src/version.rc
+    @ONLY
+)
+
 # Configure output directories for built targets
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -23,7 +76,7 @@ add_library(BrBrDbTelemetry SHARED
     src/math_utils.h
     src/net_utils.cpp
     src/net_utils.h
-    src/version.rc
+    ${CMAKE_CURRENT_BINARY_DIR}/src/version.rc
 )
 
 # Apply specific suffix/naming rules matching rFactor 2 expectations
