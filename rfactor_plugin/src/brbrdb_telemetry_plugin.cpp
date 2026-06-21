@@ -443,6 +443,7 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
             << "Long Patch Vel FL,Long Patch Vel FR,Long Patch Vel RL,Long Patch Vel RR,"
             << "Tyre Load FL,Tyre Load FR,Tyre Load RL,Tyre Load RR,"
             << "Lat Force FL,Lat Force FR,Lat Force RL,Lat Force RR,"
+            << "Long Force FL,Long Force FR,Long Force RL,Long Force RR,"
             << "Slide Pct FL,Slide Pct FR,Slide Pct RL,Slide Pct RR,"
             << "Flag,"
             << "Track Temp,Ambient Temp,Raining,Avg Track Wetness,"
@@ -544,6 +545,10 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(const TelemInfoV01& info)
   // Wheels Lat Force FL, FR, RL, RR
   ss << info.mWheel[0].mLateralForce << "," << info.mWheel[1].mLateralForce << "," << info.mWheel[2].mLateralForce
      << "," << info.mWheel[3].mLateralForce << ",";
+
+  // Wheels Long Force FL, FR, RL, RR
+  ss << info.mWheel[0].mLongitudinalForce << "," << info.mWheel[1].mLongitudinalForce << ","
+     << info.mWheel[2].mLongitudinalForce << "," << info.mWheel[3].mLongitudinalForce << ",";
 
   // Wheels Slide Pct FL, Slide Pct FR, Slide Pct RL, Slide Pct RR (mGripFract * 100)
   ss << (info.mWheel[0].mGripFract * 100.0) << "," << (info.mWheel[1].mGripFract * 100.0) << ","

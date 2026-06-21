@@ -399,5 +399,221 @@ namespace BrBrDbTelemetry
                 }
             }
         }
+
+        public static bool IsInstalledVersionNewer(string installed, string bundled)
+        {
+            try
+            {
+                var inst = new Version(installed);
+                var bund = new Version(bundled);
+                return inst > bund;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static string GetLogFilePath(string rf2Path)
+        {
+            if (string.IsNullOrEmpty(rf2Path))
+                return "";
+            return Path.Combine(rf2Path, @"UserData\BrBrDbTelemetry\BrBrDbTelemetry.log");
+        }
+
+        public static string GetSessionsDirectoryPath(string rf2Path, PluginConfig config)
+        {
+            if (config != null && config.sinks != null)
+            {
+                SinkConfig fileSink = config.sinks.Find(s => s.type == "file");
+                if (fileSink != null && !string.IsNullOrEmpty(fileSink.path))
+                {
+                    return fileSink.path;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(rf2Path))
+            {
+                string rf2Dir = Path.Combine(rf2Path, @"UserData\BrBrDbTelemetry");
+                if (Directory.Exists(rf2Dir))
+                    return rf2Dir;
+            }
+
+            string docsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "BrBrDbTelemetry");
+            if (Directory.Exists(docsPath))
+                return docsPath;
+
+            return !string.IsNullOrEmpty(rf2Path) ? Path.Combine(rf2Path, @"UserData\BrBrDbTelemetry") : docsPath;
+        }
+
+        public static FileInfo[] GetSessionFiles(string directoryPath)
+        {
+            if (string.IsNullOrEmpty(directoryPath) || !Directory.Exists(directoryPath))
+                return new FileInfo[0];
+
+            try
+            {
+                DirectoryInfo dir = new DirectoryInfo(directoryPath);
+                FileInfo[] files = dir.GetFiles("*.csv");
+                Array.Sort(files, (a, b) => b.LastWriteTime.CompareTo(a.LastWriteTime));
+                return files;
+            }
+            catch
+            {
+                return new FileInfo[0];
+            }
+        }
+
+        public class SessionMetadata
+        {
+            public FileInfo FileInfo { get; set; }
+            public string Date { get; set; }
+            public string Time { get; set; }
+            public string Track { get; set; }
+            public double SizeMb { get; set; }
+        }
+
+        public static SessionMetadata GetSessionMetadata(FileInfo file)
+        {
+            var meta = new SessionMetadata
+            {
+                FileInfo = file,
+                Date = file.LastWriteTime.ToString("yyyy-MM-dd"),
+                Time = file.LastWriteTime.ToString("HH:mm:ss"),
+                Track = "Unknown",
+                SizeMb = file.Length / (1024.0 * 1024.0)
+            };
+
+            if (file == null || !file.Exists)
+                return meta;
+
+            try
+            {
+                using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var reader = new StreamReader(stream))
+                {
+                    string line;
+                    int lineCount = 0;
+                    while ((line = reader.ReadLine()) != null && lineCount < 20)
+                    {
+                        lineCount++;
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+
+                        if (line.StartsWith("Time,x,", StringComparison.OrdinalIgnoreCase) || line.StartsWith("Time,x,z", StringComparison.OrdinalIgnoreCase))
+                        {
+                            break;
+                        }
+
+                        string[] parts = line.Split(new char[] { ',' }, 2);
+                        if (parts.Length == 2)
+                        {
+                            string key = parts[0].Trim();
+                            string val = parts[1].Trim();
+                            if (key.Equals("Track name", StringComparison.OrdinalIgnoreCase))
+                            {
+                                meta.Track = val;
+                            }
+                            else if (key.Equals("Date", StringComparison.OrdinalIgnoreCase))
+                            {
+                                meta.Date = val;
+                            }
+                            else if (key.Equals("Time", StringComparison.OrdinalIgnoreCase))
+                            {
+                                meta.Time = val;
+                            }
+                        }
+                    }
+                }
+            }
+            catch {}
+
+            return meta;
+        }
+
+        public static bool UploadSessionFile(string filePath, string serverAddress, string apiKey, out string errorMessage)
+        {
+            errorMessage = "";
+            if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+            {
+                errorMessage = "Session file does not exist.";
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(serverAddress))
+            {
+                errorMessage = "Server address is empty.";
+                return false;
+            }
+
+            try
+            {
+                string endpoint = serverAddress.TrimEnd('/') + "/api/upload/stream";
+                var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(endpoint);
+                request.Method = "POST";
+                request.ContentType = "text/csv";
+                request.Timeout = 180000; // 3 minutes timeout for telemetry upload
+                request.SendChunked = true;
+
+                if (!string.IsNullOrEmpty(apiKey))
+                {
+                    request.Headers["X-API-Key"] = apiKey;
+                }
+
+                using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (Stream reqStream = request.GetRequestStream())
+                {
+                    byte[] buffer = new byte[65536];
+                    int bytesRead;
+                    while ((bytesRead = fs.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        reqStream.Write(buffer, 0, bytesRead);
+                    }
+                }
+
+                using (var response = (System.Net.HttpWebResponse)request.GetResponse())
+                {
+                    if (response.StatusCode == System.Net.HttpStatusCode.OK)
+                    {
+                        return true;
+                    }
+                    else
+                    {
+                        errorMessage = string.Format("Server returned status code {0} ({1}).", (int)response.StatusCode, response.StatusDescription);
+                        return false;
+                    }
+                }
+            }
+            catch (System.Net.WebException ex)
+            {
+                var resp = ex.Response as System.Net.HttpWebResponse;
+                if (resp != null)
+                {
+                    try
+                    {
+                        using (var reader = new StreamReader(resp.GetResponseStream()))
+                        {
+                            string respText = reader.ReadToEnd();
+                            errorMessage = string.Format("Server Error {0}: {1}", (int)resp.StatusCode, respText);
+                        }
+                    }
+                    catch
+                    {
+                        errorMessage = string.Format("Server Error {0}: {1}", (int)resp.StatusCode, resp.StatusDescription);
+                    }
+                }
+                else
+                {
+                    errorMessage = ex.Message;
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                errorMessage = ex.Message;
+                return false;
+            }
+        }
     }
 }
+
+

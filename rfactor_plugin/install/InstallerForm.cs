@@ -51,6 +51,8 @@ namespace BrBrDbTelemetry
         private NavButton btnNavGeneral;
         private NavButton btnNavSinks;
         private NavButton btnNavOverrides;
+        private NavButton btnNavSessions;
+        private NavButton btnNavLogs;
         private NavButton btnNavManage;
 
         // Content Panels
@@ -59,7 +61,22 @@ namespace BrBrDbTelemetry
         private Panel tabGeneral;
         private Panel tabSinks;
         private Panel tabOverrides;
+        private Panel tabSessions;
+        private Panel tabLogs;
         private Panel tabAbout;
+
+        // Controls: Sessions Tab
+        private ListView lvSessions;
+        private Label lblSessionsStatus;
+        private FlatButton btnReuploadSession;
+        private FlatButton btnOpenSessionsDir;
+        private FlatButton btnRefreshSessions;
+
+        // Controls: Logs Tab
+        private TextBox txtLogsContent;
+        private Label lblLogPathStatus;
+        private FlatButton btnOpenLogExternal;
+        private FlatButton btnRefreshLogs;
 
         // Controls: Install Tab
         private Panel pnlInstallControls;
@@ -73,6 +90,7 @@ namespace BrBrDbTelemetry
         private FlatButton btnInstall;
 
         // Controls: Update Tab
+        private Label lblUpdateHeader;
         private Label lblUpdateQuestion;
         private FlatButton btnUpdate;
 
@@ -212,6 +230,8 @@ namespace BrBrDbTelemetry
             btnNavGeneral = AddNavButton("general", "General Settings");
             btnNavSinks = AddNavButton("sinks", "Sinks / Data Destinations");
             btnNavOverrides = AddNavButton("overrides", "Driver Overrides");
+            btnNavSessions = AddNavButton("sessions", "Logged sessions");
+            btnNavLogs = AddNavButton("logs", "Logs");
             btnNavManage = AddNavButton("manage", "Manage Installation");
 
             this.Controls.Add(pnlSidebar);
@@ -243,6 +263,8 @@ namespace BrBrDbTelemetry
             InitializeGeneralTab();
             InitializeSinksTab();
             InitializeOverridesTab();
+            InitializeSessionsTab();
+            InitializeLogsTab();
             InitializeAboutTab();
 
             this.Controls.Add(pnlContent);
@@ -318,7 +340,15 @@ namespace BrBrDbTelemetry
         {
             tabUpdate = CreateTabPanel();
 
-            CreateHeaderLabel(tabUpdate, "Update BrBrDb Telemetry", 20);
+            lblUpdateHeader = new Label
+            {
+                Text = "Update BrBrDb Telemetry",
+                Font = new Font("Segoe UI", 13, FontStyle.Bold),
+                ForeColor = ColorAccent,
+                Location = new Point(20, 20),
+                AutoSize = true
+            };
+            tabUpdate.Controls.Add(lblUpdateHeader);
 
             lblUpdateQuestion = new Label
             {
@@ -613,6 +643,293 @@ namespace BrBrDbTelemetry
             tabAbout.Controls.Add(btnUninstall);
         }
 
+        private void InitializeSessionsTab()
+        {
+            tabSessions = CreateTabPanel();
+
+            CreateHeaderLabel(tabSessions, "Logged Telemetry Sessions", 20);
+
+            lblSessionsStatus = new Label
+            {
+                Location = new Point(20, 55),
+                Size = new Size(580, 20),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
+                ForeColor = ColorTextMuted,
+                Text = "Directory: "
+            };
+            tabSessions.Controls.Add(lblSessionsStatus);
+
+            lvSessions = new ListView
+            {
+                Location = new Point(20, 80),
+                Size = new Size(580, 290),
+                View = View.Details,
+                FullRowSelect = true,
+                GridLines = true,
+                MultiSelect = false,
+                HeaderStyle = ColumnHeaderStyle.Nonclickable,
+                BackColor = ColorSidebar,
+                ForeColor = ColorText,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Segoe UI", 9.5f)
+            };
+            lvSessions.Columns.Add("Date", 100);
+            lvSessions.Columns.Add("Time", 80);
+            lvSessions.Columns.Add("Track", 280);
+            lvSessions.Columns.Add("Size", 95);
+            tabSessions.Controls.Add(lvSessions);
+
+            btnReuploadSession = new FlatButton("Re-upload Session", 180, 36)
+            {
+                Location = new Point(20, 380),
+                BackColor = ColorAccent
+            };
+            btnReuploadSession.Click += ReuploadSession_Click;
+            tabSessions.Controls.Add(btnReuploadSession);
+
+            btnOpenSessionsDir = new FlatButton("Open in File Manager", 180, 36)
+            {
+                Location = new Point(210, 380),
+                BackColor = ColorInputBg
+            };
+            btnOpenSessionsDir.Click += OpenSessionsDir_Click;
+            tabSessions.Controls.Add(btnOpenSessionsDir);
+
+            btnRefreshSessions = new FlatButton("Refresh List", 140, 36)
+            {
+                Location = new Point(400, 380),
+                BackColor = ColorInputBg
+            };
+            btnRefreshSessions.Click += (s, e) => RefreshSessionsList();
+            tabSessions.Controls.Add(btnRefreshSessions);
+        }
+
+        private void InitializeLogsTab()
+        {
+            tabLogs = CreateTabPanel();
+
+            CreateHeaderLabel(tabLogs, "Telemetry Plugin Log", 20);
+
+            lblLogPathStatus = new Label
+            {
+                Location = new Point(20, 55),
+                Size = new Size(580, 20),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
+                ForeColor = ColorTextMuted,
+                Text = "Log File: "
+            };
+            tabLogs.Controls.Add(lblLogPathStatus);
+
+            txtLogsContent = new TextBox
+            {
+                Location = new Point(20, 80),
+                Size = new Size(580, 290),
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Both,
+                WordWrap = false,
+                BackColor = ColorInputBg,
+                ForeColor = ColorText,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Consolas", 9f)
+            };
+            tabLogs.Controls.Add(txtLogsContent);
+
+            btnOpenLogExternal = new FlatButton("Open Log File in External Editor", 250, 36)
+            {
+                Location = new Point(20, 380),
+                BackColor = ColorAccent
+            };
+            btnOpenLogExternal.Click += OpenLogExternal_Click;
+            tabLogs.Controls.Add(btnOpenLogExternal);
+
+            btnRefreshLogs = new FlatButton("Refresh Log", 140, 36)
+            {
+                Location = new Point(280, 380),
+                BackColor = ColorInputBg
+            };
+            btnRefreshLogs.Click += (s, e) => RefreshLogsContent();
+            tabLogs.Controls.Add(btnRefreshLogs);
+        }
+
+        private void RefreshSessionsList()
+        {
+            lvSessions.Items.Clear();
+
+            string dirPath = InstallManager.GetSessionsDirectoryPath(rf2Path, config);
+            lblSessionsStatus.Text = "Directory: " + dirPath;
+
+            FileInfo[] files = InstallManager.GetSessionFiles(dirPath);
+            foreach (var file in files)
+            {
+                var meta = InstallManager.GetSessionMetadata(file);
+                var item = new ListViewItem(meta.Date);
+                item.SubItems.Add(meta.Time);
+                item.SubItems.Add(meta.Track);
+                item.SubItems.Add(string.Format("{0:F2} MB", meta.SizeMb));
+                item.Tag = meta;
+                lvSessions.Items.Add(item);
+            }
+
+            if (files.Length == 0)
+            {
+                lblSessionsStatus.Text = "Directory: " + dirPath + " (No session .csv files found)";
+            }
+        }
+
+        private void RefreshLogsContent()
+        {
+            string logPath = InstallManager.GetLogFilePath(rf2Path);
+            lblLogPathStatus.Text = "Log File: " + logPath;
+
+            if (!string.IsNullOrEmpty(logPath) && File.Exists(logPath))
+            {
+                try
+                {
+                    using (var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (var reader = new StreamReader(stream))
+                    {
+                        txtLogsContent.Text = reader.ReadToEnd();
+                    }
+                    txtLogsContent.SelectionStart = txtLogsContent.Text.Length;
+                    txtLogsContent.ScrollToCaret();
+                }
+                catch (Exception ex)
+                {
+                    txtLogsContent.Text = "Error reading log file: " + ex.Message;
+                }
+            }
+            else
+            {
+                txtLogsContent.Text = "Log file does not exist yet at:\r\n" + logPath;
+            }
+        }
+
+        private void OpenSessionsDir_Click(object sender, EventArgs e)
+        {
+            string dirPath = InstallManager.GetSessionsDirectoryPath(rf2Path, config);
+            if (lvSessions.SelectedItems.Count > 0)
+            {
+                var meta = lvSessions.SelectedItems[0].Tag as InstallManager.SessionMetadata;
+                if (meta != null && meta.FileInfo != null && meta.FileInfo.Exists)
+                {
+                    try
+                    {
+                        System.Diagnostics.Process.Start("explorer.exe", string.Format("/select,\"{0}\"", meta.FileInfo.FullName));
+                        return;
+                    }
+                    catch {}
+                }
+            }
+
+            if (Directory.Exists(dirPath))
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start("explorer.exe", string.Format("\"{0}\"", dirPath));
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Failed to open file manager: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            else
+            {
+                MessageBox.Show("Session directory does not exist yet.", "Directory Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        private void ReuploadSession_Click(object sender, EventArgs e)
+        {
+            if (lvSessions.SelectedItems.Count == 0)
+            {
+                MessageBox.Show("Please select a session from the table to re-upload.", "No Session Selected", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var meta = lvSessions.SelectedItems[0].Tag as InstallManager.SessionMetadata;
+            if (meta == null || meta.FileInfo == null || !meta.FileInfo.Exists)
+            {
+                MessageBox.Show("Selected session file could not be found on disk.", "File Missing", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string serverAddress = "https://brbrdb.brbrkitten.com";
+            string apiKey = "";
+
+            SinkConfig httpSink = config.sinks != null ? config.sinks.Find(s => s.type == "http") : null;
+            if (httpSink != null)
+            {
+                if (!string.IsNullOrEmpty(httpSink.server_address))
+                    serverAddress = httpSink.server_address;
+                apiKey = httpSink.api_key;
+            }
+            else if (!string.IsNullOrEmpty(txtApiKeyInstall.Text.Trim()))
+            {
+                apiKey = txtApiKeyInstall.Text.Trim();
+            }
+
+            var confirmResult = MessageBox.Show(
+                string.Format("Re-upload session for track '{0}' ({1} {2}, {3:F2} MB) to {4}?",
+                    meta.Track, meta.Date, meta.Time, meta.SizeMb, serverAddress),
+                "Confirm Re-upload",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+
+            if (confirmResult != DialogResult.Yes)
+                return;
+
+            this.Cursor = Cursors.WaitCursor;
+            btnReuploadSession.Enabled = false;
+            lblSessionsStatus.Text = "Uploading session '" + meta.Track + "' to " + serverAddress + "...";
+            this.Refresh();
+
+            string errorMsg;
+            bool success = InstallManager.UploadSessionFile(meta.FileInfo.FullName, serverAddress, apiKey, out errorMsg);
+
+            this.Cursor = Cursors.Default;
+            btnReuploadSession.Enabled = true;
+            lblSessionsStatus.Text = "Directory: " + InstallManager.GetSessionsDirectoryPath(rf2Path, config);
+
+            if (success)
+            {
+                MessageBox.Show(
+                    string.Format("Successfully re-uploaded telemetry session for '{0}' to {1}!", meta.Track, serverAddress),
+                    "Upload Successful",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            else
+            {
+                MessageBox.Show(
+                    string.Format("Failed to re-upload session to {0}.\n\nError details: {1}", serverAddress, errorMsg),
+                    "Upload Failed",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        }
+
+        private void OpenLogExternal_Click(object sender, EventArgs e)
+        {
+            string logPath = InstallManager.GetLogFilePath(rf2Path);
+            if (!string.IsNullOrEmpty(logPath) && File.Exists(logPath))
+            {
+                try
+                {
+                    var psi = new System.Diagnostics.ProcessStartInfo(logPath) { UseShellExecute = true };
+                    System.Diagnostics.Process.Start(psi);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Failed to open log file in external editor: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            else
+            {
+                MessageBox.Show("Log file does not exist yet at:\r\n" + logPath, "File Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
         private Panel CreateTabPanel()
         {
             var pnl = new Panel
@@ -684,6 +1001,7 @@ namespace BrBrDbTelemetry
                 pnlInstallControls.Visible = false;
                 pnlInstallError.Visible = true;
 
+                btnNavUpdate.LabelText = "Update";
                 UpdateNavigationButtons();
                 return;
             }
@@ -702,9 +1020,22 @@ namespace BrBrDbTelemetry
             if (isInstalled)
             {
                 btnUninstall.Enabled = true;
+                bool isNewer = InstallManager.IsInstalledVersionNewer(installedVersion, InstallManager.BundledVersion);
+                btnNavUpdate.LabelText = isNewer ? "Downgrade" : "Update";
+
                 if (installedVersion != InstallManager.BundledVersion)
                 {
-                    btnInstall.Text = "Update Telemetry Plugin";
+                    btnInstall.Text = isNewer ? "Downgrade Telemetry Plugin" : "Update Telemetry Plugin";
+
+                    lblUpdateHeader.Text = isNewer ? "Downgrade BrBrDb Telemetry" : "Update BrBrDb Telemetry";
+                    btnUpdate.Text = isNewer ? "Downgrade" : "Update";
+                    lblUpdateQuestion.Text = string.Format(
+                        isNewer 
+                            ? "A newer version of the plugin is installed (v{0}). Downgrade BrBrDbTelemetry to version {1}?" 
+                            : "An older version of the plugin is installed (v{0}). Update BrBrDbTelemetry to version {1}?", 
+                        installedVersion, 
+                        InstallManager.BundledVersion
+                    );
                 }
                 else
                 {
@@ -718,6 +1049,7 @@ namespace BrBrDbTelemetry
             {
                 btnInstall.Text = "Install Telemetry Plugin";
                 btnUninstall.Enabled = false;
+                btnNavUpdate.LabelText = "Update";
             }
 
             lblAboutStatus.Text = string.Format("Plugin Installation Status:\n" +
@@ -749,6 +1081,8 @@ namespace BrBrDbTelemetry
             btnNavGeneral.Visible = configVisible;
             btnNavSinks.Visible = configVisible;
             btnNavOverrides.Visible = configVisible;
+            btnNavSessions.Visible = configVisible;
+            btnNavLogs.Visible = configVisible;
             btnNavManage.Visible = configVisible;
 
             // Reposition visible sidebar buttons
@@ -919,6 +1253,8 @@ namespace BrBrDbTelemetry
             tabGeneral.Visible = false;
             tabSinks.Visible = false;
             tabOverrides.Visible = false;
+            if (tabSessions != null) tabSessions.Visible = false;
+            if (tabLogs != null) tabLogs.Visible = false;
             tabAbout.Visible = false;
 
             // Show current
@@ -927,6 +1263,8 @@ namespace BrBrDbTelemetry
             else if (tabId == "general") tabGeneral.Visible = true;
             else if (tabId == "sinks") tabSinks.Visible = true;
             else if (tabId == "overrides") tabOverrides.Visible = true;
+            else if (tabId == "sessions" && tabSessions != null) { tabSessions.Visible = true; RefreshSessionsList(); }
+            else if (tabId == "logs" && tabLogs != null) { tabLogs.Visible = true; RefreshLogsContent(); }
             else if (tabId == "manage") tabAbout.Visible = true;
         }
 
@@ -999,9 +1337,11 @@ namespace BrBrDbTelemetry
         {
             try
             {
+                bool isNewer = InstallManager.IsInstalledVersionNewer(installedVersion, InstallManager.BundledVersion);
                 InstallManager.InstallPlugin(rf2Path, "", "");
 
-                MessageBox.Show("Plugin updated successfully to version " + InstallManager.BundledVersion + "!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                string actionText = isNewer ? "downgraded" : "updated";
+                MessageBox.Show("Plugin " + actionText + " successfully to version " + InstallManager.BundledVersion + "!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 RefreshInstallationState();
             }
             catch (Exception ex)
@@ -1393,7 +1733,13 @@ namespace BrBrDbTelemetry
     public class NavButton : Control
     {
         public string TabId { get; private set; }
-        public string LabelText { get; private set; }
+        
+        private string labelText;
+        public string LabelText
+        {
+            get { return labelText; }
+            set { labelText = value; Invalidate(); }
+        }
         
         private bool isActive = false;
         public bool IsActive

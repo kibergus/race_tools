@@ -25,6 +25,11 @@ namespace BrBrDbTelemetry
             RunTest("TestSetPluginActivation_EntryExistsEnabled_Disable", TestSetPluginActivation_EntryExistsEnabled_Disable);
             RunTest("TestGetInstalledPluginDetails_FileMissing", TestGetInstalledPluginDetails_FileMissing);
             RunTest("TestGetInstalledPluginDetails_FileExistsInvalid", TestGetInstalledPluginDetails_FileExistsInvalid);
+            RunTest("TestIsInstalledVersionNewer", TestIsInstalledVersionNewer);
+            RunTest("TestGetLogFilePath", TestGetLogFilePath);
+            RunTest("TestGetSessionsDirectoryPath", TestGetSessionsDirectoryPath);
+            RunTest("TestGetSessionFiles", TestGetSessionFiles);
+            RunTest("TestGetSessionMetadata", TestGetSessionMetadata);
 
             Console.WriteLine("==================================================");
             Console.WriteLine(string.Format("Tests run: {0}, Failed: {1}", testsRun, testsFailed));
@@ -279,6 +284,89 @@ namespace BrBrDbTelemetry
                 bool result = InstallManager.GetInstalledPluginDetails(tempDir, out version);
                 Assert(result, "Should return true when file exists");
                 Assert(version == "0.0.0", "Version should fallback to 0.0.0 when FileVersionInfo fails");
+            }
+            finally
+            {
+                DeleteTempDirectory(tempDir);
+            }
+        }
+
+        static void TestIsInstalledVersionNewer()
+        {
+            Assert(InstallManager.IsInstalledVersionNewer("1.2.3", "1.2.2"), "1.2.3 should be newer than 1.2.2");
+            Assert(!InstallManager.IsInstalledVersionNewer("1.2.3", "1.2.3"), "1.2.3 should not be newer than 1.2.3");
+            Assert(!InstallManager.IsInstalledVersionNewer("1.2.1", "1.2.3"), "1.2.1 should not be newer than 1.2.3");
+            Assert(!InstallManager.IsInstalledVersionNewer("invalid", "1.2.3"), "Invalid version should return false");
+        }
+
+        static void TestGetLogFilePath()
+        {
+            Assert(InstallManager.GetLogFilePath("") == "", "Empty rf2Path should return empty string");
+            string path = InstallManager.GetLogFilePath(@"C:\rFactor2");
+            Assert(path == @"C:\rFactor2\UserData\BrBrDbTelemetry\BrBrDbTelemetry.log", "Log file path mismatch");
+        }
+
+        static void TestGetSessionsDirectoryPath()
+        {
+            string tempDir = CreateTempDirectory();
+            try
+            {
+                var config = new PluginConfig();
+                config.sinks = new List<SinkConfig>
+                {
+                    new SinkConfig { type = "file", path = @"C:\CustomTelemetry" }
+                };
+                Assert(InstallManager.GetSessionsDirectoryPath(tempDir, config) == @"C:\CustomTelemetry", "Should use configured file sink path");
+
+                config.sinks[0].path = "";
+                string defaultRf2Dir = Path.Combine(tempDir, @"UserData\BrBrDbTelemetry");
+                Directory.CreateDirectory(defaultRf2Dir);
+                Assert(InstallManager.GetSessionsDirectoryPath(tempDir, config) == defaultRf2Dir, "Should fallback to rFactor 2 UserData dir when it exists");
+            }
+            finally
+            {
+                DeleteTempDirectory(tempDir);
+            }
+        }
+
+        static void TestGetSessionFiles()
+        {
+            string tempDir = CreateTempDirectory();
+            try
+            {
+                Assert(InstallManager.GetSessionFiles("non_existent_path").Length == 0, "Non-existent path should return 0 files");
+
+                string file1 = Path.Combine(tempDir, "BrBrDbTelemetry_100_server.csv");
+                string file2 = Path.Combine(tempDir, "BrBrDbTelemetry_200_server.csv");
+                File.WriteAllText(file1, "header,data\n1,2");
+                System.Threading.Thread.Sleep(10);
+                File.WriteAllText(file2, "header,data\n3,4");
+
+                FileInfo[] files = InstallManager.GetSessionFiles(tempDir);
+                Assert(files.Length == 2, "Should find 2 CSV files");
+                Assert(files[0].Name == "BrBrDbTelemetry_200_server.csv", "Newer file should be first");
+            }
+            finally
+            {
+                DeleteTempDirectory(tempDir);
+            }
+        }
+
+        static void TestGetSessionMetadata()
+        {
+            string tempDir = CreateTempDirectory();
+            try
+            {
+                string csvPath = Path.Combine(tempDir, "test_session.csv");
+                string content = "Track name,Bayford Meadows\nDate,2026-07-25\nTime,14:25:49\nTime,x,z\n1,2,3\n";
+                File.WriteAllText(csvPath, content);
+
+                var fi = new FileInfo(csvPath);
+                var meta = InstallManager.GetSessionMetadata(fi);
+
+                Assert(meta.Track == "Bayford Meadows", "Track name should be parsed correctly");
+                Assert(meta.Date == "2026-07-25", "Date should be parsed correctly");
+                Assert(meta.Time == "14:25:49", "Time should be parsed correctly");
             }
             finally
             {
