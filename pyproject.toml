@@ -28,6 +28,7 @@ dependencies = [
     "pandas>=1.0.0",
     "numpy>=1.18.0",
     "scipy>=1.7.0",
+    "pygame>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -45,5 +46,5 @@ where = ["."]
 include = ["race_tools*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "strength_training"]
 python_files = ["test_*.py"]
