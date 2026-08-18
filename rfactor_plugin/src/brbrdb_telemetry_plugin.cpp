@@ -435,7 +435,7 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
 
       // Write CSV Column Headers
       std::stringstream colSs;
-      colSs << "Time,x,z,Speed,GForceX,GForceY,GForceZ,Throttle,Brake,Steering Angle,Lap,LapDistance,"
+      colSs << "Time,x,z,Speed,GForceLat,GForceLon,GForceVert,Throttle,Brake,Steering Angle,Lap,LapDistance,"
             << "Toe FL,Toe FR,Toe RL,Toe RR,"
             << "Ori Quat X,Ori Quat Y,Ori Quat Z,Ori Quat W,"
             << "RPS FL,RPS FR,RPS RL,RPS RR,"
@@ -492,10 +492,12 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(const TelemInfoV01& info)
                       info.mLocalVel.z * info.mLocalVel.z);
 
   // 3. G-Forces (convert m/s^2 to G, divide by 9.80665)
+  // rFactor coordinates: +x is left, +y is roof/up, +z is back.
+  // Positive lateral is to the right (-x), positive longitudinal is forward (-z).
   const double g_const = 9.80665;
-  double gForceX = info.mLocalAccel.x / g_const;
-  double gForceY = info.mLocalAccel.z / g_const;
-  double gForceZ = info.mLocalAccel.y / g_const;
+  double gForceLat = -info.mLocalAccel.x / g_const;
+  double gForceLon = -info.mLocalAccel.z / g_const;
+  double gForceVert = info.mLocalAccel.y / g_const;
 
   // 4. Pedals (scale 0-1 to 0-100)
   double throttle = info.mFilteredThrottle * 100.0;
@@ -514,7 +516,7 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(const TelemInfoV01& info)
 
   std::stringstream ss;
   ss << std::fixed << std::setprecision(5) << timeStr << "," << info.mPos.x << "," << info.mPos.z << "," << speed
-     << "," << gForceX << "," << gForceY << "," << gForceZ << "," << throttle << "," << brake << "," << steering
+     << "," << gForceLat << "," << gForceLon << "," << gForceVert << "," << throttle << "," << brake << "," << steering
      << "," << info.mLapNumber << ","
      << "" << ","; // LapDistance left empty
 
