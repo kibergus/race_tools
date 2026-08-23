@@ -4,6 +4,8 @@ An app to build up muscles used for steering without being too bored. The trick 
 
 This app works only for Fanatec wheels, under Linux and probably only under Wayland. But it was entirely coded with Antigravity. This kind of small localized task is simple enough for veryfing through the result, rather then by reading the code. I wouldn't recommend this approach for larger projects though. But it means that if you need it on Windows or for another wheel brand, Antigravity will likely manage to do that. 
 
+[![My non-boring strength training](https://img.youtube.com/vi/X5VUiv7Fx98/maxresdefault.jpg)](https://youtu.be/X5VUiv7Fx98)
+
 ## Features
 - **Static Centering Force**: Applies a configurable peak resistance to pull the wheel back to the center.
 - **Gradual Central Notch**: The resistance scales linearly between -15° and +15° of wheel deflection and saturates to maximum force past 15° to simulate a heavy spring.
