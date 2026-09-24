@@ -1,3 +1,4 @@
+import datetime
 import struct
 import math
 import numpy as np
@@ -104,13 +105,24 @@ class GoproTelemetry:
     def _parse_device(self, data: bytes) -> None:
         dev_samples = parse_gpmf(data)
         stmp = 0
+        strm_list: list[bytes] = []
         for s in dev_samples:
             if s.key == 'STMP':
                 stmp = decode_type(s.type, s.size, s.count, s.data)
             elif s.key == 'STRM':
-                self._parse_stream(s.data, stmp)
+                strm_list.append(s.data)
 
-    def _parse_stream(self, data: bytes, stmp: int) -> None:
+        has_gps9 = False
+        for s_data in strm_list:
+            strm_samples = parse_gpmf(s_data)
+            if any(s.key == 'GPS9' for s in strm_samples):
+                has_gps9 = True
+                break
+
+        for s_data in strm_list:
+            self._parse_stream(s_data, stmp, has_gps9=has_gps9)
+
+    def _parse_stream(self, data: bytes, stmp: int, has_gps9: bool = False) -> None:
         strm_samples = parse_gpmf(data)
         temp: dict[str, Any] = {}
         for s in strm_samples:
@@ -153,7 +165,26 @@ class GoproTelemetry:
             else:
                 current_stmp = stmp
 
-        if 'GPS5' in temp:
+        if has_gps9 and 'GPS9' in temp:
+            gps9_data = temp['GPS9']
+            if isinstance(gps9_data, bytes) and len(gps9_data) % 32 == 0:
+                count = len(gps9_data) // 32
+                samples = []
+                dts = []
+                base_epoch = datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc)
+                for i in range(count):
+                    sample_tuple = struct.unpack('>lllllllHH', gps9_data[i*32:(i+1)*32])
+                    lat, lon, alt, s2d, s3d, days, secs, dop, fix = sample_tuple
+                    samples.append([lat / 1e7, lon / 1e7, alt / 1e3, s2d / 1e3, s3d / 1e2])
+                    dts.append(base_epoch + datetime.timedelta(days=days, seconds=secs / 1000.0))
+                utc = dts[0].strftime('%y%m%d%H%M%S.%f').encode('ascii') if dts else b'0'
+                self.gps_data.append({
+                    'stmp': current_stmp,
+                    'utc': utc,
+                    'samples': samples,
+                    'dts': dts
+                })
+        elif not has_gps9 and 'GPS5' in temp:
             gps_samples = get_scaled('GPS5', [1, 1, 1, 1, 1])
             utc = temp.get('GPSU', '0')
             self.gps_data.append({'stmp': current_stmp, 'utc': utc, 'samples': gps_samples})
