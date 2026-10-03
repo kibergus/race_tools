@@ -173,7 +173,7 @@ class GoproTelemetry:
                 dts = []
                 base_epoch = datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc)
                 for i in range(count):
-                    sample_tuple = struct.unpack('>lllllllHH', gps9_data[i*32:(i+1)*32])
+                    sample_tuple = struct.unpack('>lllllllHH', gps9_data[i * 32:(i + 1) * 32])
                     lat, lon, alt, s2d, s3d, days, secs, dop, fix = sample_tuple
                     samples.append([lat / 1e7, lon / 1e7, alt / 1e3, s2d / 1e3, s3d / 1e2])
                     dts.append(base_epoch + datetime.timedelta(days=days, seconds=secs / 1000.0))

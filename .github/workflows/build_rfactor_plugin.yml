@@ -18,7 +18,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4.2.2
+    - uses: actions/checkout@v7
       with:
         fetch-depth: 0
 
@@ -67,7 +67,7 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - name: Upload installer EXE
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: BrBrDbTelemetryInstaller-exe
         path: rfactor_plugin/install/BrBrDbTelemetryInstaller.exe
@@ -81,13 +81,13 @@ jobs:
       contents: write
     steps:
     - name: Download installer artifact
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         name: BrBrDbTelemetryInstaller-exe
         path: release-artifacts
 
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       with:
         files: release-artifacts/BrBrDbTelemetryInstaller.exe
         draft: false
