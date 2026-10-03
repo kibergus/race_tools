@@ -30,6 +30,7 @@ namespace BrBrDbTelemetry
             RunTest("TestGetSessionsDirectoryPath", TestGetSessionsDirectoryPath);
             RunTest("TestGetSessionFiles", TestGetSessionFiles);
             RunTest("TestGetSessionMetadata", TestGetSessionMetadata);
+            RunTest("TestDeleteSessionFile", TestDeleteSessionFile);
 
             Console.WriteLine("==================================================");
             Console.WriteLine(string.Format("Tests run: {0}, Failed: {1}", testsRun, testsFailed));
@@ -367,6 +368,35 @@ namespace BrBrDbTelemetry
                 Assert(meta.Track == "Bayford Meadows", "Track name should be parsed correctly");
                 Assert(meta.Date == "2026-07-25", "Date should be parsed correctly");
                 Assert(meta.Time == "14:25:49", "Time should be parsed correctly");
+            }
+            finally
+            {
+                DeleteTempDirectory(tempDir);
+            }
+        }
+
+        static void TestDeleteSessionFile()
+        {
+            string tempDir = CreateTempDirectory();
+            try
+            {
+                string csvPath = Path.Combine(tempDir, "to_delete.csv");
+                File.WriteAllText(csvPath, "dummy telemetry data");
+
+                string error;
+                bool result = InstallManager.DeleteSessionFile(csvPath, out error);
+                Assert(result, "Deleting existing session file should succeed");
+                Assert(!File.Exists(csvPath), "File should no longer exist after deletion");
+                Assert(string.IsNullOrEmpty(error), "Error message should be empty on success");
+
+                // Test deleting already deleted file
+                result = InstallManager.DeleteSessionFile(csvPath, out error);
+                Assert(!result, "Deleting non-existent file should return false");
+                Assert(!string.IsNullOrEmpty(error), "Error message should be populated when file does not exist");
+
+                // Test empty path
+                result = InstallManager.DeleteSessionFile("", out error);
+                Assert(!result, "Empty path should return false");
             }
             finally
             {

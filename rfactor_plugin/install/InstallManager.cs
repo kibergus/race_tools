@@ -613,6 +613,35 @@ namespace BrBrDbTelemetry
                 return false;
             }
         }
+
+        public static bool DeleteSessionFile(string filePath, out string errorMessage)
+        {
+            errorMessage = "";
+            if (string.IsNullOrEmpty(filePath))
+            {
+                errorMessage = "Session file path is empty.";
+                return false;
+            }
+
+            try
+            {
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                    return true;
+                }
+                else
+                {
+                    errorMessage = "Session file does not exist.";
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                errorMessage = ex.Message;
+                return false;
+            }
+        }
     }
 }
 

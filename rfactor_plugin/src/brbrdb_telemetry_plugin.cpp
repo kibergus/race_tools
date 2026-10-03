@@ -435,7 +435,7 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
 
       // Write CSV Column Headers
       std::stringstream colSs;
-      colSs << "Time,x,z,Speed,GForceLat,GForceLon,GForceVert,Throttle,Brake,Steering Angle,Lap,LapDistance,"
+      colSs << "Time,x,z,Speed,GForceLat,GForceLon,GForceVert,Throttle,Brake,Steering Angle,Lap,"
             << "Toe FL,Toe FR,Toe RL,Toe RR,"
             << "Ori Quat X,Ori Quat Y,Ori Quat Z,Ori Quat W,"
             << "RPS FL,RPS FR,RPS RL,RPS RR,"
@@ -517,8 +517,7 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(const TelemInfoV01& info)
   std::stringstream ss;
   ss << std::fixed << std::setprecision(5) << timeStr << "," << info.mPos.x << "," << info.mPos.z << "," << speed
      << "," << gForceLat << "," << gForceLon << "," << gForceVert << "," << throttle << "," << brake << "," << steering
-     << "," << info.mLapNumber << ","
-     << "" << ","; // LapDistance left empty
+     << "," << info.mLapNumber << ",";
 
   // Wheels Toe FL, FR, RL, RR
   ss << info.mWheel[0].mToe << "," << info.mWheel[1].mToe << "," << info.mWheel[2].mToe << "," << info.mWheel[3].mToe

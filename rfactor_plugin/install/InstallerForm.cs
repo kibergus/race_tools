@@ -69,6 +69,7 @@ namespace BrBrDbTelemetry
         private ListView lvSessions;
         private Label lblSessionsStatus;
         private FlatButton btnReuploadSession;
+        private FlatButton btnDeleteSession;
         private FlatButton btnOpenSessionsDir;
         private FlatButton btnRefreshSessions;
 
@@ -666,7 +667,7 @@ namespace BrBrDbTelemetry
                 View = View.Details,
                 FullRowSelect = true,
                 GridLines = true,
-                MultiSelect = false,
+                MultiSelect = true,
                 HeaderStyle = ColumnHeaderStyle.Nonclickable,
                 BackColor = ColorSidebar,
                 ForeColor = ColorText,
@@ -675,11 +676,14 @@ namespace BrBrDbTelemetry
             };
             lvSessions.Columns.Add("Date", 100);
             lvSessions.Columns.Add("Time", 80);
-            lvSessions.Columns.Add("Track", 280);
+            lvSessions.Columns.Add("Track", 301);
             lvSessions.Columns.Add("Size", 95);
+            lvSessions.ClientSizeChanged += (s, e) => AdjustSessionColumnWidths();
+            lvSessions.ColumnWidthChanged += (s, e) => { if (e.ColumnIndex != 2) AdjustSessionColumnWidths(); };
+            lvSessions.KeyDown += LvSessions_KeyDown;
             tabSessions.Controls.Add(lvSessions);
 
-            btnReuploadSession = new FlatButton("Re-upload Session", 180, 36)
+            btnReuploadSession = new FlatButton("Re-upload", 140, 36)
             {
                 Location = new Point(20, 380),
                 BackColor = ColorAccent
@@ -687,17 +691,25 @@ namespace BrBrDbTelemetry
             btnReuploadSession.Click += ReuploadSession_Click;
             tabSessions.Controls.Add(btnReuploadSession);
 
-            btnOpenSessionsDir = new FlatButton("Open in File Manager", 180, 36)
+            btnDeleteSession = new FlatButton("Delete", 120, 36)
             {
-                Location = new Point(210, 380),
+                Location = new Point(170, 380),
+                BackColor = ColorInputBg
+            };
+            btnDeleteSession.Click += DeleteSession_Click;
+            tabSessions.Controls.Add(btnDeleteSession);
+
+            btnOpenSessionsDir = new FlatButton("Open in File Manager", 160, 36)
+            {
+                Location = new Point(300, 380),
                 BackColor = ColorInputBg
             };
             btnOpenSessionsDir.Click += OpenSessionsDir_Click;
             tabSessions.Controls.Add(btnOpenSessionsDir);
 
-            btnRefreshSessions = new FlatButton("Refresh List", 140, 36)
+            btnRefreshSessions = new FlatButton("Refresh List", 130, 36)
             {
-                Location = new Point(400, 380),
+                Location = new Point(470, 380),
                 BackColor = ColorInputBg
             };
             btnRefreshSessions.Click += (s, e) => RefreshSessionsList();
@@ -775,6 +787,46 @@ namespace BrBrDbTelemetry
             {
                 lblSessionsStatus.Text = "Directory: " + dirPath + " (No session .csv files found)";
             }
+
+            AdjustSessionColumnWidths();
+        }
+
+        private bool adjustingColumns = false;
+        private void AdjustSessionColumnWidths()
+        {
+            if (adjustingColumns || lvSessions == null || lvSessions.Columns.Count < 4) return;
+            try
+            {
+                adjustingColumns = true;
+                int fixedWidth = lvSessions.Columns[0].Width + lvSessions.Columns[1].Width + lvSessions.Columns[3].Width;
+                int clientW = lvSessions.ClientSize.Width;
+                int remaining = clientW - fixedWidth;
+                if (remaining > 50)
+                {
+                    lvSessions.Columns[2].Width = remaining;
+                }
+            }
+            finally
+            {
+                adjustingColumns = false;
+            }
+        }
+
+        private void LvSessions_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Delete)
+            {
+                DeleteSelectedSessions();
+                e.Handled = true;
+            }
+            else if (e.Control && e.KeyCode == Keys.A)
+            {
+                foreach (ListViewItem item in lvSessions.Items)
+                {
+                    item.Selected = true;
+                }
+                e.Handled = true;
+            }
         }
 
         private void RefreshLogsContent()
@@ -843,14 +895,23 @@ namespace BrBrDbTelemetry
         {
             if (lvSessions.SelectedItems.Count == 0)
             {
-                MessageBox.Show("Please select a session from the table to re-upload.", "No Session Selected", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Please select one or more sessions from the table to re-upload.", "No Session Selected", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
-            var meta = lvSessions.SelectedItems[0].Tag as InstallManager.SessionMetadata;
-            if (meta == null || meta.FileInfo == null || !meta.FileInfo.Exists)
+            var selectedSessions = new List<InstallManager.SessionMetadata>();
+            foreach (ListViewItem item in lvSessions.SelectedItems)
             {
-                MessageBox.Show("Selected session file could not be found on disk.", "File Missing", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                var meta = item.Tag as InstallManager.SessionMetadata;
+                if (meta != null && meta.FileInfo != null && meta.FileInfo.Exists)
+                {
+                    selectedSessions.Add(meta);
+                }
+            }
+
+            if (selectedSessions.Count == 0)
+            {
+                MessageBox.Show("Selected session file(s) could not be found on disk.", "Files Missing", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -869,41 +930,197 @@ namespace BrBrDbTelemetry
                 apiKey = txtApiKeyInstall.Text.Trim();
             }
 
-            var confirmResult = MessageBox.Show(
-                string.Format("Re-upload session for track '{0}' ({1} {2}, {3:F2} MB) to {4}?",
-                    meta.Track, meta.Date, meta.Time, meta.SizeMb, serverAddress),
-                "Confirm Re-upload",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question);
+            DialogResult confirmResult;
+            if (selectedSessions.Count == 1)
+            {
+                var meta = selectedSessions[0];
+                confirmResult = MessageBox.Show(
+                    string.Format("Re-upload session for track '{0}' ({1} {2}, {3:F2} MB) to {4}?",
+                        meta.Track, meta.Date, meta.Time, meta.SizeMb, serverAddress),
+                    "Confirm Re-upload",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+            }
+            else
+            {
+                double totalSizeMb = 0;
+                foreach (var s in selectedSessions)
+                    totalSizeMb += s.SizeMb;
+
+                confirmResult = MessageBox.Show(
+                    string.Format("Re-upload {0} selected sessions (total {1:F2} MB) to {2}?",
+                        selectedSessions.Count, totalSizeMb, serverAddress),
+                    "Confirm Re-upload",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+            }
 
             if (confirmResult != DialogResult.Yes)
                 return;
 
             this.Cursor = Cursors.WaitCursor;
             btnReuploadSession.Enabled = false;
-            lblSessionsStatus.Text = "Uploading session '" + meta.Track + "' to " + serverAddress + "...";
-            this.Refresh();
+            if (btnDeleteSession != null) btnDeleteSession.Enabled = false;
+            btnRefreshSessions.Enabled = false;
 
-            string errorMsg;
-            bool success = InstallManager.UploadSessionFile(meta.FileInfo.FullName, serverAddress, apiKey, out errorMsg);
+            int successCount = 0;
+            int failCount = 0;
+            var errors = new List<string>();
+
+            for (int i = 0; i < selectedSessions.Count; i++)
+            {
+                var session = selectedSessions[i];
+                lblSessionsStatus.Text = string.Format("Uploading ({0}/{1}): '{2}' to {3}...",
+                    i + 1, selectedSessions.Count, session.Track, serverAddress);
+                this.Refresh();
+
+                string errorMsg;
+                bool success = InstallManager.UploadSessionFile(session.FileInfo.FullName, serverAddress, apiKey, out errorMsg);
+                if (success)
+                {
+                    successCount++;
+                }
+                else
+                {
+                    failCount++;
+                    errors.Add(string.Format("{0} ({1}): {2}", session.Track, session.FileInfo.Name, errorMsg));
+                }
+            }
 
             this.Cursor = Cursors.Default;
             btnReuploadSession.Enabled = true;
+            if (btnDeleteSession != null) btnDeleteSession.Enabled = true;
+            btnRefreshSessions.Enabled = true;
             lblSessionsStatus.Text = "Directory: " + InstallManager.GetSessionsDirectoryPath(rf2Path, config);
 
-            if (success)
+            if (selectedSessions.Count == 1)
             {
-                MessageBox.Show(
-                    string.Format("Successfully re-uploaded telemetry session for '{0}' to {1}!", meta.Track, serverAddress),
-                    "Upload Successful",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                if (successCount == 1)
+                {
+                    MessageBox.Show(
+                        string.Format("Successfully re-uploaded telemetry session for '{0}' to {1}!", selectedSessions[0].Track, serverAddress),
+                        "Upload Successful",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+                else
+                {
+                    MessageBox.Show(
+                        string.Format("Failed to re-upload session to {0}.\n\nError details: {1}", serverAddress, errors.Count > 0 ? errors[0] : "Unknown error"),
+                        "Upload Failed",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                }
             }
             else
             {
+                if (failCount == 0)
+                {
+                    MessageBox.Show(
+                        string.Format("Successfully re-uploaded all {0} telemetry sessions to {1}!", successCount, serverAddress),
+                        "Upload Successful",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+                else if (successCount > 0)
+                {
+                    MessageBox.Show(
+                        string.Format("Uploaded {0} of {1} sessions to {2}.\n\n{3} sessions failed:\n{4}",
+                            successCount, selectedSessions.Count, serverAddress, failCount, string.Join("\n", errors.ToArray())),
+                        "Upload Partially Completed",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+                else
+                {
+                    MessageBox.Show(
+                        string.Format("Failed to re-upload {0} sessions to {1}.\n\nError details:\n{2}",
+                            failCount, serverAddress, string.Join("\n", errors.ToArray())),
+                        "Upload Failed",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private void DeleteSession_Click(object sender, EventArgs e)
+        {
+            DeleteSelectedSessions();
+        }
+
+        private void DeleteSelectedSessions()
+        {
+            if (lvSessions.SelectedItems.Count == 0)
+            {
+                MessageBox.Show("Please select one or more sessions from the table to delete.", "No Session Selected", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var selectedSessions = new List<InstallManager.SessionMetadata>();
+            foreach (ListViewItem item in lvSessions.SelectedItems)
+            {
+                var meta = item.Tag as InstallManager.SessionMetadata;
+                if (meta != null && meta.FileInfo != null)
+                {
+                    selectedSessions.Add(meta);
+                }
+            }
+
+            if (selectedSessions.Count == 0)
+                return;
+
+            DialogResult confirmResult;
+            if (selectedSessions.Count == 1)
+            {
+                var meta = selectedSessions[0];
+                confirmResult = MessageBox.Show(
+                    string.Format("Are you sure you want to permanently delete the session for track '{0}' ({1} {2}, {3:F2} MB)?\n\nFile: {4}",
+                        meta.Track, meta.Date, meta.Time, meta.SizeMb, meta.FileInfo.Name),
+                    "Confirm Deletion",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+            }
+            else
+            {
+                double totalSizeMb = 0;
+                foreach (var s in selectedSessions)
+                    totalSizeMb += s.SizeMb;
+
+                confirmResult = MessageBox.Show(
+                    string.Format("Are you sure you want to permanently delete {0} selected sessions (total {1:F2} MB)?",
+                        selectedSessions.Count, totalSizeMb),
+                    "Confirm Deletion",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+            }
+
+            if (confirmResult != DialogResult.Yes)
+                return;
+
+            int deletedCount = 0;
+            var errors = new List<string>();
+
+            foreach (var session in selectedSessions)
+            {
+                string errorMsg;
+                if (InstallManager.DeleteSessionFile(session.FileInfo.FullName, out errorMsg))
+                {
+                    deletedCount++;
+                }
+                else
+                {
+                    errors.Add(string.Format("{0}: {1}", session.FileInfo.Name, errorMsg));
+                }
+            }
+
+            RefreshSessionsList();
+
+            if (errors.Count > 0)
+            {
                 MessageBox.Show(
-                    string.Format("Failed to re-upload session to {0}.\n\nError details: {1}", serverAddress, errorMsg),
-                    "Upload Failed",
+                    string.Format("Failed to delete {0} of {1} session file(s):\n\n{2}",
+                        errors.Count, selectedSessions.Count, string.Join("\n", errors.ToArray())),
+                    "Deletion Error",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
@@ -1703,6 +1920,8 @@ namespace BrBrDbTelemetry
     {
         private static readonly Color ColorAccent = Color.FromArgb(136, 57, 239);
         private static readonly Color ColorAccentHover = Color.FromArgb(166, 129, 246);
+        private Color baseBackColor = ColorAccent;
+        private bool isHovered = false;
 
         public FlatButton(string text, int width, int height)
         {
@@ -1712,20 +1931,42 @@ namespace BrBrDbTelemetry
             this.FlatStyle = FlatStyle.Flat;
             this.FlatAppearance.BorderSize = 0;
             this.BackColor = ColorAccent;
+            this.baseBackColor = ColorAccent;
             this.ForeColor = Color.White;
             this.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
             this.Cursor = Cursors.Hand;
         }
 
+        protected override void OnBackColorChanged(EventArgs e)
+        {
+            base.OnBackColorChanged(e);
+            if (!isHovered)
+            {
+                baseBackColor = this.BackColor;
+            }
+        }
+
         protected override void OnMouseEnter(EventArgs e)
         {
-            this.BackColor = ColorAccentHover;
+            isHovered = true;
+            if (baseBackColor == ColorAccent)
+            {
+                this.BackColor = ColorAccentHover;
+            }
+            else
+            {
+                this.BackColor = Color.FromArgb(
+                    Math.Min(255, baseBackColor.R + 25),
+                    Math.Min(255, baseBackColor.G + 25),
+                    Math.Min(255, baseBackColor.B + 25));
+            }
             base.OnMouseEnter(e);
         }
 
         protected override void OnMouseLeave(EventArgs e)
         {
-            this.BackColor = ColorAccent;
+            isHovered = false;
+            this.BackColor = baseBackColor;
             base.OnMouseLeave(e);
         }
     }
