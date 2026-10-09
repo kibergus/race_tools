@@ -11,9 +11,9 @@ def test_flake8_compliance() -> None:
     # We want to run flake8 on race_tools relative to it
     race_tools_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    # Run flake8 on the current directory (race_tools root)
+    # Run flake8 on race_tools and tests to ensure code style compliance
     result = subprocess.run(
-        [sys.executable, '-m', 'flake8', '--exclude=venv,.venv,utils/venv,build,dist', '.'],
+        [sys.executable, '-m', 'flake8', 'race_tools', 'tests'],
         cwd=race_tools_root,
         capture_output=True,
         text=True

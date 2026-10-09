@@ -1,6 +1,11 @@
 import json
 import os
 from unittest.mock import MagicMock, patch
+
+import pytest
+
+pytest.importorskip('evdev')
+
 from strength_training.main import (
     TargetState,
     FanatecFFBController,
@@ -595,5 +600,3 @@ def test_screen_persistence_app_and_runner(tmp_path) -> None:
         assert runner_explicit.screen_width == 1920
         assert runner_explicit.screen_height == 1080
         assert runner_explicit.screen_x == 0
-
-
