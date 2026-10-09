@@ -100,8 +100,12 @@ TRACK_ORIGINS = {
     'Whilton Mill': TrackOrigin(
         52.28, -1.09,
         Correction(north_m=-413, east_m=79, angle_deg=-1)),
+    'Willow Springs': TrackOrigin(
+        34.87085, -118.26726,
+        Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
 }
 TRACK_ORIGINS['South Wales Karting Centre'] = TRACK_ORIGINS['Llandow']
+TRACK_ORIGINS['Willow Springs reverse'] = TRACK_ORIGINS['Willow Springs']
 
 
 def get_track_origin(track_name: str | None) -> TrackOrigin:
