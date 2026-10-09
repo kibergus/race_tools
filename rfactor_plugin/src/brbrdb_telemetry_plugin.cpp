@@ -81,6 +81,26 @@ std::string ExtractNumber(const std::string& str) {
 }
 
 // -------------------------------------------------------------
+// Helper to sanitize filename component
+// -------------------------------------------------------------
+std::string SanitizeFilename(const std::string& name) {
+  std::string sanitized;
+  for (char c : name) {
+    if (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') {
+      sanitized += c;
+    } else if (c == ' ' || c == '.' || c == '#' || c == '/' || c == '\\') {
+      if (!sanitized.empty() && sanitized.back() != '_') {
+        sanitized += '_';
+      }
+    }
+  }
+  while (!sanitized.empty() && sanitized.back() == '_') {
+    sanitized.pop_back();
+  }
+  return sanitized;
+}
+
+// -------------------------------------------------------------
 // Helper to convert session index to string representation
 // -------------------------------------------------------------
 std::string GetSessionTypeStr(long session) {
@@ -96,7 +116,6 @@ std::string GetSessionTypeStr(long session) {
     return "Race";
   return "Unknown";
 }
-
 
 static std::string WStringToString(const std::wstring& wstr) {
   std::string str;
@@ -165,39 +184,12 @@ void BrBrDbTelemetryPlugin::Startup(long version) {
 
     // Initialize and open the logger
     logger_.Open(logDirectory_ + L"\\BrBrDbTelemetry.log");
-
     logger_.Write("Plugin Startup - Version " + std::to_string(version));
 
     // 2. Load config
     LoadAndApplyConfig();
 
-    csvQueue_.Clear();
-    sinkWorkers_.clear();
-
-    // Initialize Sinks from Config
-    for (const auto& sinkConf : config_.sinks) {
-      if (!sinkConf.enabled) {
-        continue;
-      }
-      if (sinkConf.type == "file") {
-        std::wstring path = logDirectory_;
-        if (!sinkConf.path.empty()) {
-          path = std::filesystem::path(sinkConf.path).wstring();
-        }
-        try {
-          CreateTelemetryDirectory(path);
-          sinkWorkers_.push_back(std::make_unique<SinkWorker>(
-              std::make_unique<FileSink>(path, logger_), csvQueue_.reader()));
-        } catch (const std::exception& e) {
-          logger_.LogCritical("Failed to create/use telemetry directory: " + WStringToString(path) + " - Error: " + e.what());
-        }
-      } else if (sinkConf.type == "http") {
-        sinkWorkers_.push_back(std::make_unique<SinkWorker>(
-            std::make_unique<HttpSink>(sinkConf.serverAddress, sinkConf.apiKey, logger_, activeUploads_), csvQueue_.reader()));
-      }
-    }
-
-    // 2. Start the background telemetry logging thread
+    // 3. Start the background telemetry logging thread
     loggingActive_ = true;
     loggerThread_ = std::thread(&BrBrDbTelemetryPlugin::LoggerThreadWorker, this);
   } catch (const std::exception& e) {
@@ -220,13 +212,6 @@ void BrBrDbTelemetryPlugin::Shutdown() {
     }
     logger_.Write("Plugin Shutdown - Background worker thread joined successfully");
 
-    // Signal shutdown to the CSV line multi-reader queue
-    csvQueue_.SignalShutdown();
-
-    logger_.Write("Plugin Shutdown - Stopping all sink workers");
-    sinkWorkers_.clear();
-    logger_.Write("Plugin Shutdown - All sink workers stopped");
-
     // Wait for active uploads to complete (max 5 seconds)
     int waitTimeMs = 0;
     while (activeUploads_ > 0 && waitTimeMs < 5000) {
@@ -247,9 +232,13 @@ void BrBrDbTelemetryPlugin::EnterRealtime() {
   // Reload config so any external changes take effect
   LoadAndApplyConfig();
 
-  // Clear any leftover queues
+  // Clear any leftover telemetry items
   telemetryQueue_.Clear();
-  csvQueue_.Clear();
+
+  {
+    std::lock_guard<std::mutex> lock(timeTrackersMutex_);
+    timeTrackers_.clear();
+  }
 
   // Reset scoring initialization state
   scoringInitialized_ = false;
@@ -258,10 +247,6 @@ void BrBrDbTelemetryPlugin::EnterRealtime() {
 
   // Set flag to true - now UpdateTelemetry will push events to queue
   inRealtime_ = true;
-
-  // Reset timestamp interpolation state
-  firstTelemetryReceived_ = false;
-  lastElapsedTime_ = 0.0;
 
   logger_.Write("Realtime cockpit entered - Telemetry extraction enabled");
 }
@@ -272,34 +257,45 @@ void BrBrDbTelemetryPlugin::ExitRealtime() {
 
   logger_.Write("Realtime cockpit exited - Telemetry extraction disabled");
 
-  // Push sentinel to trigger session end
+  // Push sentinel to trigger session end for all active participants
   TelemInfoV01 sentinel = {};
   sentinel.mElapsedTime = -1.0;
   telemetryQueue_.Push(sentinel);
 }
 
 void BrBrDbTelemetryPlugin::UpdateTelemetry(const TelemInfoV01& info) {
-  // Only capture and queue data if we are actively driving in cockpit
+  // Only capture and queue data if we are actively in realtime
   if (inRealtime_) {
-    // Only capture once scoring has initialized and the car matches regex filter
-    if (!scoringInitialized_ || !carRegexMatched_) {
+    // Only capture once scoring has initialized
+    if (!scoringInitialized_) {
       return;
+    }
+
+    // If recording only player, check car regex filter
+    if (!config_.allParticipantsInRace) {
+      if (!carRegexMatched_) {
+        return;
+      }
     }
 
     TelemInfoV01 localInfo = info;
     auto now = std::chrono::steady_clock::now();
 
-    if (!firstTelemetryReceived_) {
-      lastElapsedTime_ = info.mElapsedTime;
-      lastElapsedTimeRealTime_ = now;
-      firstTelemetryReceived_ = true;
-    } else {
-      if (info.mElapsedTime != lastElapsedTime_) {
-        lastElapsedTime_ = info.mElapsedTime;
-        lastElapsedTimeRealTime_ = now;
+    {
+      std::lock_guard<std::mutex> lock(timeTrackersMutex_);
+      auto& tracker = timeTrackers_[info.mID];
+      if (!tracker.firstTelemetryReceived) {
+        tracker.lastElapsedTime = info.mElapsedTime;
+        tracker.lastElapsedTimeRealTime = now;
+        tracker.firstTelemetryReceived = true;
       } else {
-        double realWorldDelta = std::chrono::duration<double>(now - lastElapsedTimeRealTime_).count();
-        localInfo.mElapsedTime += realWorldDelta;
+        if (info.mElapsedTime != tracker.lastElapsedTime) {
+          tracker.lastElapsedTime = info.mElapsedTime;
+          tracker.lastElapsedTimeRealTime = now;
+        } else {
+          double realWorldDelta = std::chrono::duration<double>(now - tracker.lastElapsedTimeRealTime).count();
+          localInfo.mElapsedTime += realWorldDelta;
+        }
       }
     }
 
@@ -323,20 +319,35 @@ void BrBrDbTelemetryPlugin::UpdateScoring(const ScoringInfoV01& info) {
   if (info.mVehicle != nullptr) {
     for (long i = 0; i < info.mNumVehicles; ++i) {
       const VehicleScoringInfoV01& v = info.mVehicle[i];
-      if (v.mIsPlayer) {
-        metadata_.driverName = v.mDriverName;
-        for (const auto& override_item : compiledDriverNameOverrides_) {
-          if (std::regex_search(v.mVehicleName, override_item.regex)) {
-            metadata_.driverName = override_item.driverName;
-            break;
-          }
+
+      std::string driverName = v.mDriverName;
+      for (const auto& override_item : compiledDriverNameOverrides_) {
+        if (std::regex_search(v.mVehicleName, override_item.regex)) {
+          driverName = override_item.driverName;
+          break;
         }
+      }
+
+      std::string kartNumber = ExtractNumber(v.mVehicleName);
+      if (kartNumber.empty()) {
+        kartNumber = ExtractNumber(v.mDriverName);
+      }
+
+      ParticipantInfo p;
+      p.mID = v.mID;
+      p.driverName = driverName;
+      p.vehicleClass = v.mVehicleClass;
+      p.vehicleName = v.mVehicleName;
+      p.kartNumber = kartNumber;
+      p.flag = v.mFlag;
+      p.isPlayer = v.mIsPlayer;
+      participants_[v.mID] = p;
+
+      if (v.mIsPlayer) {
+        metadata_.driverName = driverName;
         metadata_.vehicleClass = v.mVehicleClass;
         metadata_.vehicleName = v.mVehicleName;
-        metadata_.kartNumber = ExtractNumber(v.mVehicleName);
-        if (metadata_.kartNumber.empty()) {
-          metadata_.kartNumber = ExtractNumber(v.mDriverName);
-        }
+        metadata_.kartNumber = kartNumber;
         playerFound = true;
 
         // Cache player flag status
@@ -353,7 +364,6 @@ void BrBrDbTelemetryPlugin::UpdateScoring(const ScoringInfoV01& info) {
           carRegexMatched_ = carMatched && kartMatched;
           scoringInitialized_ = true;
         }
-        break;
       }
     }
   }
@@ -363,6 +373,10 @@ void BrBrDbTelemetryPlugin::UpdateScoring(const ScoringInfoV01& info) {
       metadata_.driverName = info.mPlayerName;
     }
   }
+
+  if (!scoringInitialized_ && info.mNumVehicles > 0) {
+    scoringInitialized_ = true;
+  }
 }
 
 // -------------------------------------------------------------
@@ -371,8 +385,23 @@ void BrBrDbTelemetryPlugin::UpdateScoring(const ScoringInfoV01& info) {
 
 void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
   TelemInfoV01 info;
-  bool isSessionActive = false;
   auto reader = telemetryQueue_.reader();
+
+  const std::string csvColumnHeaders =
+      "Time,x,z,Speed,GForceLat,GForceLon,GForceVert,Throttle,Brake,Steering Angle,Lap,"
+      "Toe FL,Toe FR,Toe RL,Toe RR,"
+      "Ori Quat X,Ori Quat Y,Ori Quat Z,Ori Quat W,"
+      "RPS FL,RPS FR,RPS RL,RPS RR,"
+      "Lat Patch Vel FL,Lat Patch Vel FR,Lat Patch Vel RL,Lat Patch Vel RR,"
+      "Long Patch Vel FL,Long Patch Vel FR,Long Patch Vel RL,Long Patch Vel RR,"
+      "Tyre Load FL,Tyre Load FR,Tyre Load RL,Tyre Load RR,"
+      "Lat Force FL,Lat Force FR,Lat Force RL,Lat Force RR,"
+      "Long Force FL,Long Force FR,Long Force RL,Long Force RR,"
+      "Slide Pct FL,Slide Pct FR,Slide Pct RL,Slide Pct RR,"
+      "Flag,"
+      "Track Temp,Ambient Temp,Raining,Avg Track Wetness,"
+      "Tyre Surf Temp FL,Tyre Surf Temp FR,Tyre Surf Temp RL,Tyre Surf Temp RR,"
+      "Tyre Carcass Temp FL,Tyre Carcass Temp FR,Tyre Carcass Temp RL,Tyre Carcass Temp RR\n";
 
   while (loggingActive_) {
     // Block and wait for telemetry structures to arrive in queue using the reader
@@ -382,101 +411,148 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
 
     if (info.mElapsedTime < 0.0) // Sentinel value to close session
     {
-      if (isSessionActive) {
-        csvQueue_.Push(Sink::EndSession{});
-        isSessionActive = false;
-        logger_.Write("Telemetry session ended via sentinel.");
+      for (auto& [id, session] : participantSessions_) {
+        session->csvQueue.Push(Sink::EndSession{});
+        session->csvQueue.SignalShutdown();
+        session->sinkWorkers.clear();
       }
+      participantSessions_.clear();
+      logger_.Write("Telemetry sessions ended via sentinel.");
       continue;
     }
 
-    // Start a new session if not active
-    if (!isSessionActive) {
-      sessionStartRealTime_ = std::chrono::system_clock::now();
-      startElapsedTimeCaptured_ = false;
-      startElapsedTime_ = 0.0;
-      isSessionActive = true;
+    // Lookup or initialize participant session
+    auto it = participantSessions_.find(info.mID);
+    if (it == participantSessions_.end()) {
+      auto session = std::make_unique<ParticipantSession>();
+      session->vehicleId = info.mID;
+      session->sessionStartTime = std::chrono::system_clock::now();
+      session->startElapsedTime = info.mElapsedTime;
+      session->startElapsedTimeCaptured = true;
 
-      logger_.Write("Telemetry session started.");
-
-      // Push Start Event
-      csvQueue_.Push(Sink::StartSession{sessionStartRealTime_});
-
-      // Write CSV Metadata Headers
+      ParticipantInfo pInfo;
       {
         std::lock_guard<std::mutex> lock(metadataMutex_);
-
-        std::time_t start_time_t = std::chrono::system_clock::to_time_t(sessionStartRealTime_);
-        struct tm start_tm;
-        gmtime_s(&start_tm, &start_time_t);
-        char dateBuf[32];
-        char timeBuf[32];
-        sprintf_s(dateBuf, "%04d-%02d-%02d", start_tm.tm_year + 1900, start_tm.tm_mon + 1, start_tm.tm_mday);
-        sprintf_s(timeBuf, "%02d:%02d:%02d", start_tm.tm_hour, start_tm.tm_min, start_tm.tm_sec);
-
-        std::stringstream ss;
-        ss << "Track name,"
-           << (metadata_.trackName.empty() ? (info.mTrackName[0] != '\0' ? info.mTrackName : "Unknown Track")
-                                            : metadata_.trackName)
-           << "\n";
-        ss << "Date," << dateBuf << "\n";
-        ss << "Time," << timeBuf << "\n";
-        ss << "Driver name," << (metadata_.driverName.empty() ? "Unknown Driver" : metadata_.driverName) << "\n";
-        ss << "League," << config_.league << "\n";
-        ss << "Class," << (metadata_.vehicleClass.empty() ? "Unknown Class" : metadata_.vehicleClass) << "\n";
-        ss << "Session," << (metadata_.sessionType.empty() ? "Practice" : metadata_.sessionType) << "\n";
-        if (!metadata_.kartNumber.empty()) {
-          ss << "Kart number," << metadata_.kartNumber << "\n";
+        session->trackName = metadata_.trackName.empty()
+            ? (info.mTrackName[0] != '\0' ? info.mTrackName : "Unknown Track")
+            : metadata_.trackName;
+        session->sessionType = metadata_.sessionType.empty() ? "Practice" : metadata_.sessionType;
+        auto pit = participants_.find(info.mID);
+        if (pit != participants_.end()) {
+          pInfo = pit->second;
+        } else {
+          pInfo.mID = info.mID;
+          pInfo.vehicleName = info.mVehicleName;
+          pInfo.driverName = (metadata_.driverName.empty() ? "Unknown Driver" : metadata_.driverName);
+          pInfo.kartNumber = ExtractNumber(info.mVehicleName);
+          pInfo.isPlayer = (info.mID == 1 || info.mID == 0);
         }
-        ss << "\n"; // Blank line separating metadata header and telemetry rows
-
-        csvQueue_.Push(Sink::Line{ss.str(), /*isHeader=*/true});
       }
 
+      session->driverName = pInfo.driverName;
+      session->vehicleClass = pInfo.vehicleClass;
+      session->kartNumber = pInfo.kartNumber;
+
+      if (!config_.allParticipantsInRace && pInfo.isPlayer) {
+        session->participantTag = "";
+      } else {
+        std::string tag = !pInfo.driverName.empty() ? pInfo.driverName : ("Slot_" + std::to_string(info.mID));
+        session->participantTag = SanitizeFilename(tag);
+        if (session->participantTag.empty()) {
+          session->participantTag = "Slot_" + std::to_string(info.mID);
+        }
+      }
+
+      // Initialize Sinks for this session
+      for (const auto& sinkConf : config_.sinks) {
+        if (!sinkConf.enabled) {
+          continue;
+        }
+        if (sinkConf.type == "file") {
+          std::wstring path = logDirectory_;
+          if (!sinkConf.path.empty()) {
+            path = std::filesystem::path(sinkConf.path).wstring();
+          }
+          try {
+            CreateTelemetryDirectory(path);
+            session->sinkWorkers.push_back(std::make_unique<SinkWorker>(
+                std::make_unique<FileSink>(path, logger_), session->csvQueue.reader()));
+          } catch (const std::exception& e) {
+            logger_.LogCritical("Failed to create/use telemetry directory: " + WStringToString(path) + " - Error: " + e.what());
+          }
+        } else if (sinkConf.type == "http") {
+          session->sinkWorkers.push_back(std::make_unique<SinkWorker>(
+              std::make_unique<HttpSink>(sinkConf.serverAddress, sinkConf.apiKey, logger_, activeUploads_), session->csvQueue.reader()));
+        }
+      }
+
+      // Push Start Event
+      session->csvQueue.Push(Sink::StartSession{session->sessionStartTime, session->participantTag});
+
+      // Write CSV Metadata Headers
+      std::time_t start_time_t = std::chrono::system_clock::to_time_t(session->sessionStartTime);
+      struct tm start_tm;
+      gmtime_s(&start_tm, &start_time_t);
+      char dateBuf[32];
+      char timeBuf[32];
+      sprintf_s(dateBuf, "%04d-%02d-%02d", start_tm.tm_year + 1900, start_tm.tm_mon + 1, start_tm.tm_mday);
+      sprintf_s(timeBuf, "%02d:%02d:%02d", start_tm.tm_hour, start_tm.tm_min, start_tm.tm_sec);
+
+      std::stringstream ss;
+      ss << "Track name," << session->trackName << "\n";
+      ss << "Date," << dateBuf << "\n";
+      ss << "Time," << timeBuf << "\n";
+      ss << "Driver name," << (session->driverName.empty() ? "Unknown Driver" : session->driverName) << "\n";
+      ss << "League," << config_.league << "\n";
+      ss << "Class," << (session->vehicleClass.empty() ? "Unknown Class" : session->vehicleClass) << "\n";
+      ss << "Session," << session->sessionType << "\n";
+      if (!session->kartNumber.empty()) {
+        ss << "Kart number," << session->kartNumber << "\n";
+      }
+      ss << "\n"; // Blank line separating metadata header and telemetry rows
+      session->csvQueue.Push(Sink::Line{ss.str(), /*isHeader=*/true});
+
       // Write CSV Column Headers
-      std::stringstream colSs;
-      colSs << "Time,x,z,Speed,GForceLat,GForceLon,GForceVert,Throttle,Brake,Steering Angle,Lap,"
-            << "Toe FL,Toe FR,Toe RL,Toe RR,"
-            << "Ori Quat X,Ori Quat Y,Ori Quat Z,Ori Quat W,"
-            << "RPS FL,RPS FR,RPS RL,RPS RR,"
-            << "Lat Patch Vel FL,Lat Patch Vel FR,Lat Patch Vel RL,Lat Patch Vel RR,"
-            << "Long Patch Vel FL,Long Patch Vel FR,Long Patch Vel RL,Long Patch Vel RR,"
-            << "Tyre Load FL,Tyre Load FR,Tyre Load RL,Tyre Load RR,"
-            << "Lat Force FL,Lat Force FR,Lat Force RL,Lat Force RR,"
-            << "Long Force FL,Long Force FR,Long Force RL,Long Force RR,"
-            << "Slide Pct FL,Slide Pct FR,Slide Pct RL,Slide Pct RR,"
-            << "Flag,"
-            << "Track Temp,Ambient Temp,Raining,Avg Track Wetness,"
-            << "Tyre Surf Temp FL,Tyre Surf Temp FR,Tyre Surf Temp RL,Tyre Surf Temp RR,"
-            << "Tyre Carcass Temp FL,Tyre Carcass Temp FR,Tyre Carcass Temp RL,Tyre Carcass Temp RR\n";
-      csvQueue_.Push(Sink::Line{colSs.str(), /*isHeader=*/true});
+      session->csvQueue.Push(Sink::Line{csvColumnHeaders, /*isHeader=*/true});
+
+      logger_.Write("Telemetry session started for participant: " + session->driverName + " (ID: " + std::to_string(info.mID) + ")");
+      it = participantSessions_.emplace(info.mID, std::move(session)).first;
     }
 
-    if (isSessionActive) {
-      std::string line = FormatTelemetryLine(info);
-      csvQueue_.Push(Sink::Line{line, /*isHeader=*/false});
+    auto& session = it->second;
+    unsigned char flag = 0;
+    {
+      std::lock_guard<std::mutex> lock(metadataMutex_);
+      auto pit = participants_.find(info.mID);
+      if (pit != participants_.end()) {
+        flag = pit->second.flag;
+      }
     }
+
+    std::string line = FormatTelemetryLine(info, session->sessionStartTime, session->startElapsedTime, flag);
+    session->csvQueue.Push(Sink::Line{line, /*isHeader=*/false});
   }
 
-  if (isSessionActive) {
-    csvQueue_.Push(Sink::EndSession{});
-    isSessionActive = false;
-    logger_.Write("Telemetry session ended via shutdown.");
+  for (auto& [id, session] : participantSessions_) {
+    session->csvQueue.Push(Sink::EndSession{});
+    session->csvQueue.SignalShutdown();
+    session->sinkWorkers.clear();
   }
+  participantSessions_.clear();
+  logger_.Write("All telemetry sessions ended via shutdown.");
 }
 
-std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(const TelemInfoV01& info) {
-  if (!startElapsedTimeCaptured_) {
-    startElapsedTime_ = info.mElapsedTime;
-    startElapsedTimeCaptured_ = true;
-  }
-
+std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(
+    const TelemInfoV01& info,
+    const std::chrono::system_clock::time_point& sessionStartRealTime,
+    double startElapsedTime,
+    unsigned char flag) {
   // 1. Time (ISO-8601 UTC)
-  double elapsedDiff = info.mElapsedTime - startElapsedTime_;
+  double elapsedDiff = info.mElapsedTime - startElapsedTime;
   if (elapsedDiff < 0.0)
     elapsedDiff = 0.0;
-  auto tp = sessionStartRealTime_ + std::chrono::duration_cast<std::chrono::system_clock::duration>(
-                                         std::chrono::milliseconds(static_cast<long long>(elapsedDiff * 1000.0)));
+  auto tp = sessionStartRealTime + std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                                       std::chrono::milliseconds(static_cast<long long>(elapsedDiff * 1000.0)));
 
   std::time_t time_c = std::chrono::system_clock::to_time_t(tp);
   struct tm gm_tm;
@@ -554,7 +630,7 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(const TelemInfoV01& info)
   // Wheels Slide Pct FL, Slide Pct FR, Slide Pct RL, Slide Pct RR (mGripFract * 100)
   ss << (info.mWheel[0].mGripFract * 100.0) << "," << (info.mWheel[1].mGripFract * 100.0) << ","
      << (info.mWheel[2].mGripFract * 100.0) << "," << (info.mWheel[3].mGripFract * 100.0) << ","
-     << static_cast<int>(currentFlag_.load()) << ",";
+     << static_cast<int>(flag) << ",";
 
   // Track conditions (sourced from ScoringInfoV01 via cached atomics)
   ss << cachedTrackTemp_.load() << ","

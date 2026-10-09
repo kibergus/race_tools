@@ -99,6 +99,7 @@ namespace BrBrDbTelemetry
         private TextBox txtCarRegexp;
         private TextBox txtKartNumberFilter;
         private TextBox txtLeague;
+        private CheckBox chkAllParticipantsInRace;
         private FlatButton btnSaveGeneral;
 
         // Controls: Sinks Tab
@@ -415,9 +416,29 @@ namespace BrBrDbTelemetry
             };
             tabGeneral.Controls.Add(lblLeagueHelp);
 
-            btnSaveGeneral = new FlatButton("Save Configuration", 200, 40)
+            chkAllParticipantsInRace = new CheckBox
             {
-                Location = new Point(20, 370),
+                Text = "Collect telemetry for all participants in a race",
+                Location = new Point(20, 360),
+                Size = new Size(580, 25),
+                Font = new Font("Segoe UI", 9.5f),
+                ForeColor = ColorText
+            };
+            tabGeneral.Controls.Add(chkAllParticipantsInRace);
+
+            Label lblAllParticipantsHelp = new Label
+            {
+                Text = "When enabled, telemetry will be recorded for all participants in the session instead of only the main player.",
+                Location = new Point(20, 388),
+                Size = new Size(580, 20),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
+                ForeColor = ColorTextMuted
+            };
+            tabGeneral.Controls.Add(lblAllParticipantsHelp);
+
+            btnSaveGeneral = new FlatButton("Save Configuration", 200, 35)
+            {
+                Location = new Point(20, 420),
                 BackColor = ColorAccent
             };
             btnSaveGeneral.Click += SaveGeneral_Click;
@@ -1359,6 +1380,7 @@ namespace BrBrDbTelemetry
                     txtCarRegexp.Text = config.car_name_regexp;
                     txtKartNumberFilter.Text = config.kart_number_filter;
                     txtLeague.Text = config.league;
+                    chkAllParticipantsInRace.Checked = config.all_participants_in_race;
 
                     // Bind install tab config from file if present
                     SinkConfig fileSink = config.sinks.Find(s => s.type == "file");
@@ -1397,7 +1419,8 @@ namespace BrBrDbTelemetry
                 {
                     return txtCarRegexp.Text != diskConfig.car_name_regexp ||
                            txtKartNumberFilter.Text != diskConfig.kart_number_filter ||
-                           txtLeague.Text != diskConfig.league;
+                           txtLeague.Text != diskConfig.league ||
+                           chkAllParticipantsInRace.Checked != diskConfig.all_participants_in_race;
                 }
                 else if (tabId == "sinks")
                 {
@@ -1438,6 +1461,7 @@ namespace BrBrDbTelemetry
                         config.car_name_regexp = txtCarRegexp.Text;
                         config.kart_number_filter = txtKartNumberFilter.Text;
                         config.league = txtLeague.Text;
+                        config.all_participants_in_race = chkAllParticipantsInRace.Checked;
                     }
                     SaveConfigToDisk();
                 }
@@ -1595,6 +1619,7 @@ namespace BrBrDbTelemetry
             config.car_name_regexp = txtCarRegexp.Text;
             config.kart_number_filter = txtKartNumberFilter.Text;
             config.league = txtLeague.Text;
+            config.all_participants_in_race = chkAllParticipantsInRace.Checked;
 
             SaveConfigToDisk();
             MessageBox.Show("General settings saved successfully!", "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);

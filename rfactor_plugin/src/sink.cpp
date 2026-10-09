@@ -188,7 +188,11 @@ FileSink::~FileSink() {
 void FileSink::operator()(const StartSession& start) {
   auto time_t_val = std::chrono::system_clock::to_time_t(start.sessionStartTime);
   std::stringstream ss;
-  ss << "BrBrDbTelemetry_" << time_t_val << "_server.csv";
+  if (start.participantTag.empty()) {
+    ss << "BrBrDbTelemetry_" << time_t_val << "_server.csv";
+  } else {
+    ss << "BrBrDbTelemetry_" << time_t_val << "_" << start.participantTag << "_server.csv";
+  }
   filePath_ = logDirectory_ + L"\\" + std::filesystem::path(ss.str()).wstring();
 
   file_.open(filePath_, std::ios::out | std::ios::trunc);
@@ -238,7 +242,9 @@ void HttpSink::operator()(const StartSession& start) {
   buffer_.clear();
   backoff_.Reset();
   Disconnect();
-  logger_.Write("HttpSink - Started session using server " + serverAddress_);
+  logger_.Write("HttpSink - Started session" +
+                (start.participantTag.empty() ? "" : " for " + start.participantTag) +
+                " using server " + serverAddress_);
 }
 
 void HttpSink::operator()(const Line& line) {

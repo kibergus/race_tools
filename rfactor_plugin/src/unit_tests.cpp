@@ -13,16 +13,20 @@
 // limitations under the License.
 // ==============================================================================
 
+#define _CRT_SECURE_NO_WARNINGS
 #include "math_utils.h"
 #include "net_utils.h"
 #include "config.h"
 #include "logger.h"
 #include "sink.h"
+#include "brbrdb_telemetry_plugin.h"
 #include <iostream>
 #include <cassert>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <cstring>
+#include <thread>
 
 using namespace race_tools;
 
@@ -158,6 +162,8 @@ void TestConfigLoadSave() {
 
   // 2. Test saving a customized configuration
   PluginConfig customConfig;
+  assert(customConfig.allParticipantsInRace == false);
+  customConfig.allParticipantsInRace = true;
   customConfig.carNameRegexp = "IAME Cadet #.*";
   customConfig.league = "cadet_cup";
   customConfig.driverNameOverrides.push_back({"#8", "Alexey Guseynov"});
@@ -180,6 +186,7 @@ void TestConfigLoadSave() {
 
   // 3. Test loading the customized configuration back
   PluginConfig loadedCustom = LoadPluginConfig(tempConfigPath);
+  assert(loadedCustom.allParticipantsInRace == true);
   assert(loadedCustom.carNameRegexp == "IAME Cadet #.*");
   assert(loadedCustom.league == "cadet_cup");
   assert(loadedCustom.driverNameOverrides.size() == 2);
@@ -268,6 +275,20 @@ void TestConfigLoadSave() {
     threwOnMissingServerAddress = true;
   }
   assert(threwOnMissingServerAddress);
+
+  // 9. Test loading all_participants_in_race with non-boolean
+  {
+    std::ofstream badFile(tempConfigPath);
+    badFile << "{ \"all_participants_in_race\": \"not_a_bool\" }";
+    badFile.close();
+  }
+  bool threwOnBadAllParticipants = false;
+  try {
+    LoadPluginConfig(tempConfigPath);
+  } catch (const std::runtime_error&) {
+    threwOnBadAllParticipants = true;
+  }
+  assert(threwOnBadAllParticipants);
 
   // Cleanup
   std::filesystem::remove(tempConfigPath, ec);
@@ -397,6 +418,202 @@ void TestRetryBackoff() {
   std::cout << "TestRetryBackoff passed!" << std::endl;
 }
 
+void TestSanitizeFilename() {
+  assert(SanitizeFilename("John Doe") == "John_Doe");
+  assert(SanitizeFilename("Driver #123") == "Driver_123");
+  assert(SanitizeFilename("A/B\\C") == "A_B_C");
+  assert(SanitizeFilename("Normal_Name-1") == "Normal_Name-1");
+  assert(SanitizeFilename("...Special...") == "Special");
+  assert(SanitizeFilename("") == "");
+  std::cout << "TestSanitizeFilename passed!" << std::endl;
+}
+
+void TestMultiParticipantTelemetry() {
+  std::wstring moduleDir = GetCurrentModuleDirectory();
+  std::wstring configPath = GetConfigFilePath();
+  std::wstring tempLogDir = moduleDir + L"\\test_multipart_logs";
+  std::error_code ec;
+  std::filesystem::remove_all(tempLogDir, ec);
+  std::filesystem::create_directories(tempLogDir, ec);
+
+  std::wstring backupConfigPath = configPath + L".bak";
+  if (std::filesystem::exists(configPath)) {
+    std::filesystem::copy_file(configPath, backupConfigPath, std::filesystem::copy_options::overwrite_existing, ec);
+  }
+
+  PluginConfig testConfig;
+  testConfig.carNameRegexp = ".*";
+  testConfig.allParticipantsInRace = true;
+  testConfig.league = "test_league";
+  SinkConfig fSink;
+  fSink.type = "file";
+  std::string tempLogDirA = std::filesystem::path(tempLogDir).string();
+  fSink.path = tempLogDirA;
+  fSink.enabled = true;
+  testConfig.sinks.push_back(fSink);
+  SavePluginConfig(configPath, testConfig);
+
+  {
+    BrBrDbTelemetryPlugin plugin(tempLogDir);
+    plugin.Startup(7);
+    assert(plugin.WantsTelemetryUpdates() == 2);
+
+    ScoringInfoV01 scoring = {};
+    std::strcpy(scoring.mTrackName, "Rowrah");
+    scoring.mSession = 10; // Race
+    scoring.mNumVehicles = 2;
+
+    VehicleScoringInfoV01 vehicles[2] = {};
+    vehicles[0].mID = 1;
+    std::strcpy(vehicles[0].mDriverName, "PlayerDriver");
+    std::strcpy(vehicles[0].mVehicleName, "Kart #1");
+    std::strcpy(vehicles[0].mVehicleClass, "Senior MAX");
+    vehicles[0].mIsPlayer = true;
+
+    vehicles[1].mID = 2;
+    std::strcpy(vehicles[1].mDriverName, "RivalDriver");
+    std::strcpy(vehicles[1].mVehicleName, "Kart #2");
+    std::strcpy(vehicles[1].mVehicleClass, "Senior MAX");
+    vehicles[1].mIsPlayer = false;
+
+    scoring.mVehicle = vehicles;
+
+    plugin.EnterRealtime();
+    plugin.UpdateScoring(scoring);
+
+    TelemInfoV01 telem1 = {};
+    telem1.mID = 1;
+    telem1.mElapsedTime = 10.0;
+    std::strcpy(telem1.mVehicleName, "Kart #1");
+    std::strcpy(telem1.mTrackName, "Rowrah");
+    plugin.UpdateTelemetry(telem1);
+
+    TelemInfoV01 telem2 = {};
+    telem2.mID = 2;
+    telem2.mElapsedTime = 10.0;
+    std::strcpy(telem2.mVehicleName, "Kart #2");
+    std::strcpy(telem2.mTrackName, "Rowrah");
+    plugin.UpdateTelemetry(telem2);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    plugin.ExitRealtime();
+    plugin.Shutdown();
+
+    int csvCount = 0;
+    bool foundPlayerFile = false;
+    bool foundRivalFile = false;
+    for (const auto& entry : std::filesystem::directory_iterator(tempLogDir)) {
+      if (entry.path().extension() == ".csv") {
+        csvCount++;
+        std::string filename = entry.path().filename().string();
+        if (filename.find("PlayerDriver") != std::string::npos) {
+          foundPlayerFile = true;
+          std::ifstream in(entry.path());
+          std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+          assert(content.find("Driver name,PlayerDriver") != std::string::npos);
+        }
+        if (filename.find("RivalDriver") != std::string::npos) {
+          foundRivalFile = true;
+          std::ifstream in(entry.path());
+          std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+          assert(content.find("Driver name,RivalDriver") != std::string::npos);
+        }
+      }
+    }
+    assert(csvCount == 2);
+    assert(foundPlayerFile);
+    assert(foundRivalFile);
+  }
+
+  if (std::filesystem::exists(backupConfigPath)) {
+    std::filesystem::copy_file(backupConfigPath, configPath, std::filesystem::copy_options::overwrite_existing, ec);
+    std::filesystem::remove(backupConfigPath, ec);
+  }
+  std::filesystem::remove_all(tempLogDir, ec);
+
+  std::cout << "TestMultiParticipantTelemetry passed!" << std::endl;
+}
+
+void TestPlayerOnlyTelemetry() {
+  std::wstring moduleDir = GetCurrentModuleDirectory();
+  std::wstring configPath = GetConfigFilePath();
+  std::wstring tempLogDir = moduleDir + L"\\test_playeronly_logs";
+  std::error_code ec;
+  std::filesystem::remove_all(tempLogDir, ec);
+  std::filesystem::create_directories(tempLogDir, ec);
+
+  std::wstring backupConfigPath = configPath + L".bak";
+  if (std::filesystem::exists(configPath)) {
+    std::filesystem::copy_file(configPath, backupConfigPath, std::filesystem::copy_options::overwrite_existing, ec);
+  }
+
+  PluginConfig testConfig;
+  testConfig.carNameRegexp = ".*";
+  testConfig.allParticipantsInRace = false;
+  testConfig.league = "test_league";
+  SinkConfig fSink;
+  fSink.type = "file";
+  std::string tempLogDirA = std::filesystem::path(tempLogDir).string();
+  fSink.path = tempLogDirA;
+  fSink.enabled = true;
+  testConfig.sinks.push_back(fSink);
+  SavePluginConfig(configPath, testConfig);
+
+  {
+    BrBrDbTelemetryPlugin plugin(tempLogDir);
+    plugin.Startup(7);
+    assert(plugin.WantsTelemetryUpdates() == 1);
+
+    ScoringInfoV01 scoring = {};
+    std::strcpy(scoring.mTrackName, "Rowrah");
+    scoring.mSession = 10;
+    scoring.mNumVehicles = 1;
+
+    VehicleScoringInfoV01 vehicle = {};
+    vehicle.mID = 1;
+    std::strcpy(vehicle.mDriverName, "SoloDriver");
+    std::strcpy(vehicle.mVehicleName, "Kart #1");
+    std::strcpy(vehicle.mVehicleClass, "Senior MAX");
+    vehicle.mIsPlayer = true;
+    scoring.mVehicle = &vehicle;
+
+    plugin.EnterRealtime();
+    plugin.UpdateScoring(scoring);
+
+    TelemInfoV01 telem = {};
+    telem.mID = 1;
+    telem.mElapsedTime = 5.0;
+    std::strcpy(telem.mVehicleName, "Kart #1");
+    std::strcpy(telem.mTrackName, "Rowrah");
+    plugin.UpdateTelemetry(telem);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    plugin.ExitRealtime();
+    plugin.Shutdown();
+
+    int csvCount = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(tempLogDir)) {
+      if (entry.path().extension() == ".csv") {
+        csvCount++;
+        std::string filename = entry.path().filename().string();
+        assert(filename.find("_server.csv") != std::string::npos);
+        assert(filename.find("SoloDriver") == std::string::npos);
+      }
+    }
+    assert(csvCount == 1);
+  }
+
+  if (std::filesystem::exists(backupConfigPath)) {
+    std::filesystem::copy_file(backupConfigPath, configPath, std::filesystem::copy_options::overwrite_existing, ec);
+    std::filesystem::remove(backupConfigPath, ec);
+  }
+  std::filesystem::remove_all(tempLogDir, ec);
+
+  std::cout << "TestPlayerOnlyTelemetry passed!" << std::endl;
+}
+
 int main() {
   std::cout << "Running unit tests for MatrixToQuaternion..." << std::endl;
   TestIdentityMatrix();
@@ -415,6 +632,15 @@ int main() {
 
   std::cout << "Running unit tests for RetryBackoff..." << std::endl;
   TestRetryBackoff();
+
+  std::cout << "Running unit tests for SanitizeFilename..." << std::endl;
+  TestSanitizeFilename();
+
+  std::cout << "Running unit tests for MultiParticipantTelemetry..." << std::endl;
+  TestMultiParticipantTelemetry();
+
+  std::cout << "Running unit tests for PlayerOnlyTelemetry..." << std::endl;
+  TestPlayerOnlyTelemetry();
 
   std::cout << "All unit tests passed successfully!" << std::endl;
   return 0;

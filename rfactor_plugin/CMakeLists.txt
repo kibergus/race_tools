@@ -116,6 +116,8 @@ endif()
 # Create Unit Tests executable target
 add_executable(unit_tests 
     src/unit_tests.cpp
+    src/brbrdb_telemetry_plugin.cpp
+    src/brbrdb_telemetry_plugin.h
     src/config.cpp
     src/config.h
     src/safe_queue.h

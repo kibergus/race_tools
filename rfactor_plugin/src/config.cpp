@@ -71,6 +71,12 @@ PluginConfig LoadPluginConfig(const std::wstring& path) {
     }
     outConfig.league = j["league"].get<std::string>();
   }
+  if (j.contains("all_participants_in_race")) {
+    if (!j["all_participants_in_race"].is_boolean()) {
+      throw std::runtime_error("Field 'all_participants_in_race' must be a boolean");
+    }
+    outConfig.allParticipantsInRace = j["all_participants_in_race"].get<bool>();
+  }
 
   if (j.contains("sinks")) {
     if (!j["sinks"].is_array()) {
@@ -150,6 +156,7 @@ void SavePluginConfig(const std::wstring& path, const PluginConfig& config) {
   j["car_name_regexp"] = config.carNameRegexp;
   j["kart_number_filter"] = config.kartNumberFilter;
   j["league"] = config.league;
+  j["all_participants_in_race"] = config.allParticipantsInRace;
 
   nlohmann::json sinks_arr = nlohmann::json::array();
   for (const auto& item : config.sinks) {

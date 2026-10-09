@@ -26,6 +26,7 @@
 #include <regex>
 #include <chrono>
 #include <map>
+#include <unordered_map>
 #include <limits>
 #include <memory>
 #include <variant>
@@ -39,6 +40,8 @@
 
 namespace race_tools {
 
+std::string SanitizeFilename(const std::string& name);
+
 struct SessionMetadata {
   std::string trackName;
   std::string driverName;
@@ -46,6 +49,38 @@ struct SessionMetadata {
   std::string vehicleClass;
   std::string vehicleName;
   std::string kartNumber;
+};
+
+struct ParticipantInfo {
+  long mID = 0;
+  std::string driverName;
+  std::string vehicleClass;
+  std::string vehicleName;
+  std::string kartNumber;
+  unsigned char flag = 0;
+  bool isPlayer = false;
+};
+
+struct VehicleTimeTracker {
+  double lastElapsedTime = 0.0;
+  std::chrono::steady_clock::time_point lastElapsedTimeRealTime;
+  bool firstTelemetryReceived = false;
+};
+
+struct ParticipantSession {
+  long vehicleId = 0;
+  std::string participantTag;
+  std::string driverName;
+  std::string vehicleClass;
+  std::string kartNumber;
+  std::string trackName;
+  std::string sessionType;
+  std::chrono::system_clock::time_point sessionStartTime;
+  double startElapsedTime = 0.0;
+  bool startElapsedTimeCaptured = false;
+
+  SafeQueue<Sink::Message> csvQueue;
+  std::vector<std::unique_ptr<SinkWorker>> sinkWorkers;
 };
 
 // The Telemetry Plugin Implementation Class
@@ -60,7 +95,7 @@ public:
   virtual void EnterRealtime() override;
   virtual void ExitRealtime() override;
 
-  virtual long WantsTelemetryUpdates() override { return 1; }
+  virtual long WantsTelemetryUpdates() override { return config_.allParticipantsInRace ? 2 : 1; }
   virtual void UpdateTelemetry(const TelemInfoV01& info) override;
 
   virtual bool WantsScoringUpdates() override { return true; }
@@ -76,6 +111,7 @@ private:
 
   SessionMetadata metadata_;
   std::mutex metadataMutex_;
+  std::unordered_map<long, ParticipantInfo> participants_;
 
   PluginConfig config_;
   std::regex carNameRegex_;
@@ -97,20 +133,19 @@ private:
   std::atomic<double> cachedAvgWetness_{0.0};
 
   Logger logger_;
-  std::chrono::system_clock::time_point sessionStartRealTime_;
-  double startElapsedTime_ = 0.0;
-  bool startElapsedTimeCaptured_ = false;
   std::atomic<int> activeUploads_{0};
-  double lastElapsedTime_ = 0.0;
-  std::chrono::steady_clock::time_point lastElapsedTimeRealTime_;
-  bool firstTelemetryReceived_ = false;
 
-  SafeQueue<Sink::Message> csvQueue_;
-  std::vector<std::unique_ptr<SinkWorker>> sinkWorkers_;
+  std::mutex timeTrackersMutex_;
+  std::unordered_map<long, VehicleTimeTracker> timeTrackers_;
+
+  std::unordered_map<long, std::unique_ptr<ParticipantSession>> participantSessions_;
 
   void LoadAndApplyConfig();
   void LoggerThreadWorker();
-  std::string FormatTelemetryLine(const TelemInfoV01& info);
+  std::string FormatTelemetryLine(const TelemInfoV01& info,
+                                 const std::chrono::system_clock::time_point& sessionStartTime,
+                                 double startElapsedTime,
+                                 unsigned char flag);
 };
 
 } // namespace race_tools

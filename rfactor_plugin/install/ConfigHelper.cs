@@ -39,6 +39,7 @@ namespace BrBrDbTelemetry
         public string car_name_regexp { get; set; }
         public string kart_number_filter { get; set; }
         public string league { get; set; }
+        public bool all_participants_in_race { get; set; }
         public List<DriverNameOverride> driver_name_overrides { get; set; }
         public List<SinkConfig> sinks { get; set; }
 
@@ -47,6 +48,7 @@ namespace BrBrDbTelemetry
             car_name_regexp = "KSP.*";
             kart_number_filter = "";
             league = "kartsim";
+            all_participants_in_race = false;
             driver_name_overrides = new List<DriverNameOverride>();
             sinks = new List<SinkConfig>();
         }
@@ -62,6 +64,7 @@ namespace BrBrDbTelemetry
             sb.AppendLine("    \"car_name_regexp\": " + EscapeString(config.car_name_regexp) + ",");
             sb.AppendLine("    \"kart_number_filter\": " + EscapeString(config.kart_number_filter) + ",");
             sb.AppendLine("    \"league\": " + EscapeString(config.league) + ",");
+            sb.AppendLine("    \"all_participants_in_race\": " + config.all_participants_in_race.ToString().ToLower() + ",");
 
             // Sinks
             sb.AppendLine("    \"sinks\": [");
@@ -127,6 +130,8 @@ namespace BrBrDbTelemetry
                         config.kart_number_filter = (string)dict["kart_number_filter"];
                     if (dict.ContainsKey("league") && dict["league"] is string)
                         config.league = (string)dict["league"];
+                    if (dict.ContainsKey("all_participants_in_race") && dict["all_participants_in_race"] is bool)
+                        config.all_participants_in_race = (bool)dict["all_participants_in_race"];
 
                     if (dict.ContainsKey("sinks"))
                     {

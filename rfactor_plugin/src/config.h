@@ -38,6 +38,7 @@ struct PluginConfig {
   std::string carNameRegexp = "KSP.*";
   std::string kartNumberFilter = ""; // empty = match all kart numbers
   std::string league = "kartsim";
+  bool allParticipantsInRace = false;
   std::vector<DriverNameOverride> driverNameOverrides;
   std::vector<SinkConfig> sinks;
 };

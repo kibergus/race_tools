@@ -31,6 +31,7 @@ namespace BrBrDbTelemetry
             RunTest("TestGetSessionFiles", TestGetSessionFiles);
             RunTest("TestGetSessionMetadata", TestGetSessionMetadata);
             RunTest("TestDeleteSessionFile", TestDeleteSessionFile);
+            RunTest("TestConfigHelperAllParticipantsInRace", TestConfigHelperAllParticipantsInRace);
 
             Console.WriteLine("==================================================");
             Console.WriteLine(string.Format("Tests run: {0}, Failed: {1}", testsRun, testsFailed));
@@ -402,6 +403,25 @@ namespace BrBrDbTelemetry
             {
                 DeleteTempDirectory(tempDir);
             }
+        }
+
+        static void TestConfigHelperAllParticipantsInRace()
+        {
+            var config = new PluginConfig();
+            Assert(!config.all_participants_in_race, "Default all_participants_in_race should be false");
+
+            string serialized = ConfigHelper.Serialize(config);
+            Assert(serialized.Contains("\"all_participants_in_race\": false"), "Serialized json should contain all_participants_in_race: false");
+
+            var deserialized = ConfigHelper.Deserialize(serialized);
+            Assert(!deserialized.all_participants_in_race, "Deserialized config should have all_participants_in_race false");
+
+            config.all_participants_in_race = true;
+            string serializedTrue = ConfigHelper.Serialize(config);
+            Assert(serializedTrue.Contains("\"all_participants_in_race\": true"), "Serialized json should contain all_participants_in_race: true");
+
+            var deserializedTrue = ConfigHelper.Deserialize(serializedTrue);
+            Assert(deserializedTrue.all_participants_in_race, "Deserialized config should have all_participants_in_race true");
         }
     }
 }
