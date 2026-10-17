@@ -43,6 +43,7 @@ namespace BrBrDbTelemetry
         private Label lblTitle;
         private Button btnClose;
         private Button btnMinimize;
+        private PictureBox picAppIcon;
 
         // Sidebar Navigation Buttons
         private List<NavButton> navButtons = new List<NavButton>();
@@ -143,6 +144,11 @@ namespace BrBrDbTelemetry
             this.ForeColor = ColorText;
             this.StartPosition = FormStartPosition.CenterScreen;
             this.Text = "BrBrDb Telemetry";
+            this.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            if (this.Icon == null)
+            {
+                throw new InvalidOperationException("Failed to load application icon: icon not found in executable.");
+            }
 
             InitializeWindowChrome();
             InitializeSidebar();
@@ -172,13 +178,25 @@ namespace BrBrDbTelemetry
             pnlTitleBar.MouseMove += TitleBar_MouseMove;
             pnlTitleBar.MouseUp += TitleBar_MouseUp;
 
+            picAppIcon = new PictureBox
+            {
+                Size = new Size(22, 22),
+                Location = new Point(12, 9),
+                SizeMode = PictureBoxSizeMode.Zoom,
+                Image = this.Icon.ToBitmap()
+            };
+            picAppIcon.MouseDown += TitleBar_MouseDown;
+            picAppIcon.MouseMove += TitleBar_MouseMove;
+            picAppIcon.MouseUp += TitleBar_MouseUp;
+            pnlTitleBar.Controls.Add(picAppIcon);
+
             lblTitle = new Label
             {
-                Text = " BrBrDb Telemetry",
+                Text = "BrBrDb Telemetry",
                 Font = new Font("Segoe UI", 10, FontStyle.Bold),
                 ForeColor = ColorText,
                 AutoSize = true,
-                Location = new Point(12, 10)
+                Location = new Point(38, 10)
             };
             lblTitle.MouseDown += TitleBar_MouseDown;
             lblTitle.MouseMove += TitleBar_MouseMove;

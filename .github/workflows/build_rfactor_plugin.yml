@@ -56,6 +56,7 @@ jobs:
         }
         & $csc /target:winexe `
           /out:install\BrBrDbTelemetryInstaller.exe `
+          /win32icon:install\favicon.ico `
           /resource:$dll `
           /r:System.Windows.Forms.dll `
           /r:System.Drawing.dll `

@@ -138,8 +138,13 @@ if ($Target -eq "installer") {
     }
 
     $installerExe = "install/BrBrDbTelemetryInstaller.exe"
+    $iconArgs = @()
+    if (Test-Path "install\favicon.ico") {
+        $iconArgs += "/win32icon:install\favicon.ico"
+    }
+
     Write-Host "Running C# compiler..."
-    & $csc "/target:winexe" "/out:$installerExe" "/resource:$sourceDll" "/r:System.Windows.Forms.dll" "/r:System.Drawing.dll" "/r:System.dll" "install\Program.cs" "install\InstallManager.cs" "install\ConfigHelper.cs" "install\InstallerForm.cs"
+    & $csc "/target:winexe" "/out:$installerExe" "/resource:$sourceDll" @iconArgs "/r:System.Windows.Forms.dll" "/r:System.Drawing.dll" "/r:System.dll" "install\Program.cs" "install\InstallManager.cs" "install\ConfigHelper.cs" "install\InstallerForm.cs"
     if ($LASTEXITCODE -ne 0) {
         Write-Error "C# Installer compilation failed!"
         exit $LASTEXITCODE
@@ -184,9 +189,13 @@ if ($Target -eq "deploy") {
     }
 
     $installerExe = "install/BrBrDbTelemetryInstaller.exe"
+    $iconArgs = @()
+    if (Test-Path "install\favicon.ico") {
+        $iconArgs += "/win32icon:install\favicon.ico"
+    }
 
     Write-Host "Running C# compiler..."
-    & $csc "/target:winexe" "/out:$installerExe" "/resource:$sourceDll" "/r:System.Windows.Forms.dll" "/r:System.Drawing.dll" "/r:System.dll" "install\Program.cs" "install\InstallManager.cs" "install\ConfigHelper.cs" "install\InstallerForm.cs"
+    & $csc "/target:winexe" "/out:$installerExe" "/resource:$sourceDll" @iconArgs "/r:System.Windows.Forms.dll" "/r:System.Drawing.dll" "/r:System.dll" "install\Program.cs" "install\InstallManager.cs" "install\ConfigHelper.cs" "install\InstallerForm.cs"
 
     if ($LASTEXITCODE -eq 0 -and (Test-Path $installerExe)) {
         Write-Host "SUCCESS: Built GUI Installer at $installerExe"
