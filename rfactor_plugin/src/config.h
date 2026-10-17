@@ -31,6 +31,8 @@ struct SinkConfig {
   std::string serverAddress; // for http sink
   std::string apiKey; // for http sink
   bool enabled = true;
+  int maxRetries = 10;
+  int bufferDurationMinutes = 30;
 };
 
 // Structure holding the configuration options for the telemetry extractor plugin

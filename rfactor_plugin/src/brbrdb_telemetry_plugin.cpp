@@ -482,7 +482,13 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
           }
         } else if (sinkConf.type == "http") {
           session->sinkWorkers.push_back(std::make_unique<SinkWorker>(
-              std::make_unique<HttpSink>(sinkConf.serverAddress, sinkConf.apiKey, logger_, activeUploads_), session->csvQueue.reader()));
+              std::make_unique<HttpSink>(sinkConf.serverAddress, sinkConf.apiKey, logger_, activeUploads_,
+                                         std::chrono::minutes(sinkConf.bufferDurationMinutes),
+                                         std::chrono::minutes(10),
+                                         8,
+                                         std::chrono::minutes(2),
+                                         sinkConf.maxRetries),
+              session->csvQueue.reader()));
         }
       }
 

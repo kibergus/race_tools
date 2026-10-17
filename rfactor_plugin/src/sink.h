@@ -96,10 +96,11 @@ private:
 class HttpSink : public Sink {
 public:
   HttpSink(const std::string& serverAddress, const std::string& apiKey, Logger& logger, std::atomic<int>& activeUploads,
-           std::chrono::seconds bufferDuration = std::chrono::minutes(5),
-           std::chrono::seconds backoffWindow = std::chrono::minutes(5),
-           int maxBackoffAttempts = 6,
-           std::chrono::seconds maxConnectionDuration = std::chrono::minutes(2));
+           std::chrono::seconds bufferDuration = std::chrono::minutes(30),
+           std::chrono::seconds backoffWindow = std::chrono::minutes(10),
+           int maxBackoffAttempts = 8,
+           std::chrono::seconds maxConnectionDuration = std::chrono::minutes(2),
+           int maxEndSessionRetries = 10);
 
   virtual void operator()(const StartSession& start) override;
   virtual void operator()(const Line& line) override;
@@ -137,6 +138,7 @@ private:
   RetryBackoff backoff_;
   std::chrono::steady_clock::time_point lastConnectTime_;
   std::chrono::seconds maxConnectionDuration_;
+  int maxEndSessionRetries_;
 
   // Helpers
   bool Connect();
@@ -158,6 +160,8 @@ public:
   SinkWorker& operator=(const SinkWorker&) = delete;
   SinkWorker(SinkWorker&&) = delete;
   SinkWorker& operator=(SinkWorker&&) = delete;
+
+  void Abort();
 
 private:
   std::unique_ptr<Sink> sink_;

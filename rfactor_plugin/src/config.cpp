@@ -115,6 +115,18 @@ PluginConfig LoadPluginConfig(const std::wstring& path) {
           }
           sink.apiKey = item["api_key"].get<std::string>();
         }
+        if (item.contains("max_retries")) {
+          if (!item["max_retries"].is_number_integer()) {
+            throw std::runtime_error("Field 'max_retries' in http sink must be an integer");
+          }
+          sink.maxRetries = item["max_retries"].get<int>();
+        }
+        if (item.contains("buffer_duration_minutes")) {
+          if (!item["buffer_duration_minutes"].is_number_integer()) {
+            throw std::runtime_error("Field 'buffer_duration_minutes' in http sink must be an integer");
+          }
+          sink.bufferDurationMinutes = item["buffer_duration_minutes"].get<int>();
+        }
       } else {
         throw std::runtime_error("Unknown sink type: " + sink.type);
       }
@@ -168,6 +180,8 @@ void SavePluginConfig(const std::wstring& path, const PluginConfig& config) {
     } else if (item.type == "http") {
       item_json["server_address"] = item.serverAddress;
       item_json["api_key"] = item.apiKey;
+      item_json["max_retries"] = item.maxRetries;
+      item_json["buffer_duration_minutes"] = item.bufferDurationMinutes;
     }
     sinks_arr.push_back(item_json);
   }

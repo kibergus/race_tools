@@ -93,7 +93,7 @@ void UploadBufferWinHttp(const std::string& data, const std::string& serverAddre
     throw std::runtime_error("WinHttpOpen failed (error code " + std::to_string(GetLastError()) + ")");
   }
 
-  WinHttpSetTimeouts(hSession, 10000, 10000, 0, 0);
+  WinHttpSetTimeouts(hSession, 10000, 10000, 30000, 30000);
 
   WinHttpHandle hConnect = WinHttpConnect(hSession, addrInfo.host.c_str(), addrInfo.port, 0);
   if (!hConnect) {
@@ -219,10 +219,10 @@ void FileSink::operator()(const EndSession& end) {
 
 HttpSink::HttpSink(const std::string& serverAddress, const std::string& apiKey, Logger& logger, std::atomic<int>& activeUploads,
                    std::chrono::seconds bufferDuration, std::chrono::seconds backoffWindow, int maxBackoffAttempts,
-                   std::chrono::seconds maxConnectionDuration)
+                   std::chrono::seconds maxConnectionDuration, int maxEndSessionRetries)
     : serverAddress_(serverAddress), apiKey_(apiKey), logger_(logger), activeUploads_(activeUploads),
       bufferDuration_(bufferDuration), backoff_(backoffWindow, maxBackoffAttempts),
-      maxConnectionDuration_(maxConnectionDuration) {}
+      maxConnectionDuration_(maxConnectionDuration), maxEndSessionRetries_(maxEndSessionRetries) {}
 
 HttpSink::~HttpSink() {
   Disconnect();
@@ -347,13 +347,58 @@ bool HttpSink::Finalize() {
 
 void HttpSink::operator()(const EndSession& end) {
   (void)end;
+  logger_.Write("HttpSink - Session ended, finalizing stream to " + serverAddress_);
+
+  bool finalized = false;
   if (connected_) {
-    logger_.Write("HttpSink - Session ended, finalizing stream to " + serverAddress_);
-    if (Finalize()) {
+    finalized = Finalize();
+    if (finalized) {
       logger_.Write("HttpSink - Streaming finished successfully, session finalized.");
+      return;
+    } else {
+      logger_.Write("HttpSink - Active stream finalization failed. Retrying full upload...");
     }
   } else {
-    logger_.Write("HttpSink - Session ended but not connected. Stream could not be finalized.");
+    logger_.Write("HttpSink - Session ended while disconnected. Retrying upload of buffered data...");
+  }
+
+  // Retry upload of buffered telemetry
+  int maxRetries = maxEndSessionRetries_;
+  for (int attempt = 1; attempt <= maxRetries; ++attempt) {
+    logger_.Write("HttpSink - Re-upload attempt " + std::to_string(attempt) + "/" +
+                  std::to_string(maxRetries) + " to " + serverAddress_ + "...");
+
+    Disconnect();
+
+    if (Connect()) {
+      try {
+        for (const auto& h : headers_) {
+          WriteChunk(h);
+        }
+        for (const auto& buffered : buffer_) {
+          WriteChunk(buffered.text);
+        }
+        if (Finalize()) {
+          logger_.Write("HttpSink - Retried upload succeeded on attempt " +
+                        std::to_string(attempt) + ", session finalized.");
+          finalized = true;
+          break;
+        }
+      } catch (const std::exception& e) {
+        logger_.Write("HttpSink - Re-upload attempt " + std::to_string(attempt) + " failed: " + e.what());
+      }
+    }
+
+    if (attempt < maxRetries) {
+      int backoffSec = (std::min)(1 << attempt, 16);
+      logger_.Write("HttpSink - Waiting " + std::to_string(backoffSec) + "s before retry...");
+      std::this_thread::sleep_for(std::chrono::seconds(backoffSec));
+    }
+  }
+
+  if (!finalized) {
+    logger_.Write("HttpSink - Failed to upload session to " + serverAddress_ +
+                  " after " + std::to_string(maxRetries) + " attempts. Session saved to local file.");
     Disconnect();
   }
 }
@@ -370,7 +415,7 @@ bool HttpSink::Connect() {
       throw std::runtime_error("WinHttpOpen failed (error code " + std::to_string(GetLastError()) + ")");
     }
 
-    WinHttpSetTimeouts(hSession_, 10000, 10000, 0, 0);
+    WinHttpSetTimeouts(hSession_, 10000, 10000, 30000, 30000);
 
     hConnect_ = WinHttpConnect(hSession_, addrInfo.host.c_str(), addrInfo.port, 0);
     if (!hConnect_) {
@@ -457,22 +502,22 @@ SinkWorker::SinkWorker(std::unique_ptr<Sink> sink, SafeQueue<Sink::Message>::Rea
   thread_ = std::thread(&SinkWorker::WorkerThread, this);
 }
 
-SinkWorker::~SinkWorker() {
+void SinkWorker::Abort() {
   active_ = false;
   if (sink_) {
     sink_->Abort();
   }
+}
+
+SinkWorker::~SinkWorker() {
   if (thread_.joinable()) {
     thread_.join();
   }
 }
 
 void SinkWorker::WorkerThread() {
-  while (active_) {
-    Sink::Message msg;
-    if (!reader_.Pop(msg)) {
-      break;
-    }
+  Sink::Message msg;
+  while (active_ && reader_.Pop(msg)) {
     std::visit(*sink_, msg);
   }
 }

@@ -545,73 +545,92 @@ namespace BrBrDbTelemetry
                 return false;
             }
 
-            try
+            int maxRetries = 5;
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
             {
-                string endpoint = serverAddress.TrimEnd('/') + "/api/upload/stream";
-                var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(endpoint);
-                request.Method = "POST";
-                request.ContentType = "text/csv";
-                request.Timeout = 180000; // 3 minutes timeout for telemetry upload
-                request.SendChunked = true;
-
-                if (!string.IsNullOrEmpty(apiKey))
+                try
                 {
-                    request.Headers["X-API-Key"] = apiKey;
-                }
+                    string endpoint = serverAddress.TrimEnd('/') + "/api/upload/stream";
+                    var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(endpoint);
+                    request.Method = "POST";
+                    request.ContentType = "text/csv";
+                    request.Timeout = 180000; // 3 minutes timeout for telemetry upload
+                    request.SendChunked = true;
 
-                using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                using (Stream reqStream = request.GetRequestStream())
-                {
-                    byte[] buffer = new byte[65536];
-                    int bytesRead;
-                    while ((bytesRead = fs.Read(buffer, 0, buffer.Length)) > 0)
+                    if (!string.IsNullOrEmpty(apiKey))
                     {
-                        reqStream.Write(buffer, 0, bytesRead);
+                        request.Headers["X-API-Key"] = apiKey;
+                    }
+
+                    using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (Stream reqStream = request.GetRequestStream())
+                    {
+                        byte[] buffer = new byte[65536];
+                        int bytesRead;
+                        while ((bytesRead = fs.Read(buffer, 0, buffer.Length)) > 0)
+                        {
+                            reqStream.Write(buffer, 0, bytesRead);
+                        }
+                    }
+
+                    using (var response = (System.Net.HttpWebResponse)request.GetResponse())
+                    {
+                        if (response.StatusCode == System.Net.HttpStatusCode.OK)
+                        {
+                            return true;
+                        }
+                        else
+                        {
+                            errorMessage = string.Format("Server returned status code {0} ({1}).", (int)response.StatusCode, response.StatusDescription);
+                            int code = (int)response.StatusCode;
+                            if (code >= 400 && code < 500 && code != 408 && code != 429)
+                            {
+                                return false; // Non-retryable client error
+                            }
+                        }
                     }
                 }
-
-                using (var response = (System.Net.HttpWebResponse)request.GetResponse())
+                catch (System.Net.WebException ex)
                 {
-                    if (response.StatusCode == System.Net.HttpStatusCode.OK)
+                    var resp = ex.Response as System.Net.HttpWebResponse;
+                    if (resp != null)
                     {
-                        return true;
+                        try
+                        {
+                            using (var reader = new StreamReader(resp.GetResponseStream()))
+                            {
+                                string respText = reader.ReadToEnd();
+                                errorMessage = string.Format("Server Error {0}: {1}", (int)resp.StatusCode, respText);
+                            }
+                        }
+                        catch
+                        {
+                            errorMessage = string.Format("Server Error {0}: {1}", (int)resp.StatusCode, resp.StatusDescription);
+                        }
+
+                        int code = (int)resp.StatusCode;
+                        if (code >= 400 && code < 500 && code != 408 && code != 429)
+                        {
+                            return false; // Non-retryable client error
+                        }
                     }
                     else
                     {
-                        errorMessage = string.Format("Server returned status code {0} ({1}).", (int)response.StatusCode, response.StatusDescription);
-                        return false;
+                        errorMessage = ex.Message;
                     }
                 }
-            }
-            catch (System.Net.WebException ex)
-            {
-                var resp = ex.Response as System.Net.HttpWebResponse;
-                if (resp != null)
-                {
-                    try
-                    {
-                        using (var reader = new StreamReader(resp.GetResponseStream()))
-                        {
-                            string respText = reader.ReadToEnd();
-                            errorMessage = string.Format("Server Error {0}: {1}", (int)resp.StatusCode, respText);
-                        }
-                    }
-                    catch
-                    {
-                        errorMessage = string.Format("Server Error {0}: {1}", (int)resp.StatusCode, resp.StatusDescription);
-                    }
-                }
-                else
+                catch (Exception ex)
                 {
                     errorMessage = ex.Message;
                 }
-                return false;
+
+                if (attempt < maxRetries)
+                {
+                    System.Threading.Thread.Sleep(1000 * Math.Min(1 << attempt, 16));
+                }
             }
-            catch (Exception ex)
-            {
-                errorMessage = ex.Message;
-                return false;
-            }
+
+            return false;
         }
 
         public static bool DeleteSessionFile(string filePath, out string errorMessage)

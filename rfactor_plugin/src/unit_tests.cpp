@@ -202,6 +202,8 @@ void TestConfigLoadSave() {
   assert(loadedCustom.sinks[1].serverAddress == "https://myracedb.com:8080");
   assert(loadedCustom.sinks[1].apiKey == "secret_api_key_123");
   assert(loadedCustom.sinks[1].enabled == false);
+  assert(loadedCustom.sinks[1].maxRetries == 10);
+  assert(loadedCustom.sinks[1].bufferDurationMinutes == 30);
 
   // 4. Test loading malformed JSON.
   // Let's overwrite the file with bad JSON.
@@ -614,6 +616,56 @@ void TestPlayerOnlyTelemetry() {
   std::cout << "TestPlayerOnlyTelemetry passed!" << std::endl;
 }
 
+class MockTestSink : public Sink {
+public:
+  std::vector<std::string>& lines_;
+  bool& startReceived_;
+  bool& endReceived_;
+
+  MockTestSink(std::vector<std::string>& lines, bool& startReceived, bool& endReceived)
+      : lines_(lines), startReceived_(startReceived), endReceived_(endReceived) {}
+
+  void operator()(const StartSession& start) override {
+    (void)start;
+    startReceived_ = true;
+  }
+  void operator()(const Line& line) override {
+    lines_.push_back(line.text);
+  }
+  void operator()(const EndSession& end) override {
+    (void)end;
+    endReceived_ = true;
+  }
+};
+
+void TestSinkWorkerGracefulDrain() {
+  SafeQueue<Sink::Message> queue;
+  std::vector<std::string> lines;
+  bool startReceived = false;
+  bool endReceived = false;
+
+  {
+    auto mockSink = std::make_unique<MockTestSink>(lines, startReceived, endReceived);
+    SinkWorker worker(std::move(mockSink), queue.reader());
+
+    queue.Push(Sink::StartSession{});
+    for (int i = 0; i < 50; ++i) {
+      queue.Push(Sink::Line{"Line " + std::to_string(i)});
+    }
+    queue.Push(Sink::EndSession{});
+    queue.SignalShutdown();
+    // Destructor of SinkWorker runs when exiting this scope
+  }
+
+  // Verify that all messages were drained and processed before worker destruction completed
+  if (!startReceived || lines.size() != 50 || lines[0] != "Line 0" ||
+      lines[49] != "Line 49" || !endReceived) {
+    throw std::runtime_error("TestSinkWorkerGracefulDrain assertions failed!");
+  }
+
+  std::cout << "TestSinkWorkerGracefulDrain passed!" << std::endl;
+}
+
 int main() {
   std::cout << "Running unit tests for MatrixToQuaternion..." << std::endl;
   TestIdentityMatrix();
@@ -641,6 +693,9 @@ int main() {
 
   std::cout << "Running unit tests for PlayerOnlyTelemetry..." << std::endl;
   TestPlayerOnlyTelemetry();
+
+  std::cout << "Running unit tests for SinkWorkerGracefulDrain..." << std::endl;
+  TestSinkWorkerGracefulDrain();
 
   std::cout << "All unit tests passed successfully!" << std::endl;
   return 0;
