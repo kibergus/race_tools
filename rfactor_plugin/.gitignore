@@ -4,3 +4,9 @@
 # Build directories
 build/
 out/
+bin/
+obj/
+publish/
+install/bin/
+install/obj/
+install/publish/

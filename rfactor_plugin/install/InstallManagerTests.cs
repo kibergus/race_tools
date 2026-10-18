@@ -32,6 +32,7 @@ namespace BrBrDbTelemetry
             RunTest("TestGetSessionMetadata", TestGetSessionMetadata);
             RunTest("TestDeleteSessionFile", TestDeleteSessionFile);
             RunTest("TestConfigHelperAllParticipantsInRace", TestConfigHelperAllParticipantsInRace);
+            RunTest("TestCompressBrotli", TestCompressBrotli);
 
             Console.WriteLine("==================================================");
             Console.WriteLine(string.Format("Tests run: {0}, Failed: {1}", testsRun, testsFailed));
@@ -423,5 +424,42 @@ namespace BrBrDbTelemetry
             var deserializedTrue = ConfigHelper.Deserialize(serializedTrue);
             Assert(deserializedTrue.all_participants_in_race, "Deserialized config should have all_participants_in_race true");
         }
+
+        static void TestCompressBrotli()
+        {
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < 2000; i++)
+            {
+                sb.AppendLine("2026-10-18T12:00:00.123Z,54.123456,-3.123456,45.2,1,0.012,0.034,0.056,98.2,12.4");
+            }
+            byte[] inputBytes = System.Text.Encoding.UTF8.GetBytes(sb.ToString());
+
+            using (var msIn = new MemoryStream(inputBytes))
+            using (var msCompressed = new MemoryStream())
+            {
+                InstallManager.CompressBrotli(msIn, msCompressed, 4);
+
+                byte[] compressedBytes = msCompressed.ToArray();
+                Assert(compressedBytes.Length < inputBytes.Length / 2, "Brotli should compress telemetry CSV by at least 50%");
+
+                // Decompress using standard BrotliStream to verify integrity
+                using (var msDecomp = new MemoryStream())
+                using (var decompressor = new System.IO.Compression.BrotliStream(new MemoryStream(compressedBytes), System.IO.Compression.CompressionMode.Decompress))
+                {
+                    decompressor.CopyTo(msDecomp);
+                    byte[] decompressedBytes = msDecomp.ToArray();
+                    Assert(decompressedBytes.Length == inputBytes.Length, "Decompressed length should match original length");
+
+                    for (int i = 0; i < inputBytes.Length; i++)
+                    {
+                        if (inputBytes[i] != decompressedBytes[i])
+                        {
+                            throw new Exception("Decompressed content mismatch at index " + i);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
+

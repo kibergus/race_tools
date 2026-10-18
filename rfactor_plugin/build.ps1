@@ -53,28 +53,13 @@ Copy-Item "BrBrTelemetry.test.json" -Destination (Join-Path $binReleaseDir "BrBr
 
 if ($Target -eq "test") {
     Write-Host ""
-    Write-Host "Compiling C# installer unit tests..."
-    $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-    if (-not (Test-Path $csc)) {
-        Write-Error "C# compiler csc.exe not found at $csc! Cannot compile C# tests."
-        exit 1
-    }
-    
-    $testExe = "install\BrBrDbTelemetryInstallerTests.exe"
-    if (Test-Path $testExe) {
-        Remove-Item $testExe -Force
-    }
-
-    & $csc "/target:exe" "/out:$testExe" "/r:System.dll" "install\InstallManager.cs" "install\ConfigHelper.cs" "install\InstallManagerTests.cs"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "C# installer unit tests compilation failed!"
-        exit $LASTEXITCODE
-    }
-
-    Write-Host ""
-    Write-Host "Running C# installer unit tests..."
-    & $testExe
+    Write-Host "Running C# installer unit tests via dotnet..."
+    & dotnet run --project install/BrBrDbTelemetryInstallerTests.csproj
     $csharpExit = $LASTEXITCODE
+    if ($csharpExit -ne 0) {
+        Write-Error "C# installer unit tests failed!"
+        exit $csharpExit
+    }
 
     Write-Host ""
     Write-Host "Building C++ unit tests..."
@@ -88,10 +73,6 @@ if ($Target -eq "test") {
     Write-Host "Running unit tests via CMake..."
     & $cmakePath --build build --config Release --target run_tests
     $cppExit = $LASTEXITCODE
-
-    if (Test-Path $testExe) {
-        Remove-Item $testExe -Force
-    }
 
     if ($csharpExit -ne 0 -or $cppExit -ne 0) {
         Write-Error "Unit tests failed!"
@@ -124,31 +105,16 @@ if ($Target -eq "installer") {
     }
 
     Write-Host ""
-    Write-Host "Compiling GUI Installer and Configurator..."
-    $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-    if (-not (Test-Path $csc)) {
-        Write-Error "C# compiler csc.exe not found at $csc! Cannot compile installer."
-        exit 1
-    }
-
-    $sourceDll = "build/bin/Release/BrBrDbTelemetry64.dll"
-    if (-not (Test-Path $sourceDll)) {
-        Write-Error "Could not find built DLL at $sourceDll. Aborting installer compilation."
-        exit 1
-    }
-
-    $installerExe = "install/BrBrDbTelemetryInstaller.exe"
-    $iconArgs = @()
-    if (Test-Path "install\favicon.ico") {
-        $iconArgs += "/win32icon:install\favicon.ico"
-    }
-
-    Write-Host "Running C# compiler..."
-    & $csc "/target:winexe" "/out:$installerExe" "/resource:$sourceDll" @iconArgs "/r:System.Windows.Forms.dll" "/r:System.Drawing.dll" "/r:System.dll" "install\Program.cs" "install\InstallManager.cs" "install\ConfigHelper.cs" "install\InstallerForm.cs"
+    Write-Host "Publishing GUI Installer and Configurator (Self-Contained .NET 8 win-x64)..."
+    $installerProj = "install/BrBrDbTelemetryInstaller.csproj"
+    $publishDir = "install/publish"
+    & dotnet publish $installerProj -c Release -o $publishDir
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "C# Installer compilation failed!"
+        Write-Error "C# Installer publish failed!"
         exit $LASTEXITCODE
     }
+    $installerExe = "install/BrBrDbTelemetryInstaller.exe"
+    Copy-Item (Join-Path $publishDir "BrBrDbTelemetryInstaller.exe") -Destination $installerExe -Force
 
     Write-Host ""
     Write-Host "Launching Installer: $installerExe..."
@@ -159,7 +125,7 @@ if ($Target -eq "installer") {
 if ($Target -eq "deploy") {
     Write-Host ""
     Write-Host "Running all unit tests..."
-    powershell -File .\build.ps1 -Target test
+    powershell -ExecutionPolicy Bypass -File .\build.ps1 -Target test
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Unit tests failed! Aborting deployment."
         exit $LASTEXITCODE
@@ -173,32 +139,16 @@ if ($Target -eq "deploy") {
         exit $LASTEXITCODE
     }
 
-    # 3. Compile C# GUI Installer & Configurator
+    # 3. Publish C# GUI Installer & Configurator
     Write-Host ""
-    Write-Host "Compiling GUI Installer and Configurator..."
-    $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-    if (-not (Test-Path $csc)) {
-        Write-Error "C# compiler csc.exe not found at $csc! Cannot compile installer."
-        exit 1
-    }
+    Write-Host "Publishing GUI Installer and Configurator (Self-Contained .NET 8 win-x64)..."
+    $installerProj = "install/BrBrDbTelemetryInstaller.csproj"
+    $publishDir = "install/publish"
+    & dotnet publish $installerProj -c Release -o $publishDir
 
-    $sourceDll = "build/bin/Release/BrBrDbTelemetry64.dll"
-    if (-not (Test-Path $sourceDll)) {
-        Write-Error "Could not find built DLL at $sourceDll. Aborting installer compilation."
-        exit 1
-    }
-
-    $installerExe = "install/BrBrDbTelemetryInstaller.exe"
-    $iconArgs = @()
-    if (Test-Path "install\favicon.ico") {
-        $iconArgs += "/win32icon:install\favicon.ico"
-    }
-
-    Write-Host "Running C# compiler..."
-    & $csc "/target:winexe" "/out:$installerExe" "/resource:$sourceDll" @iconArgs "/r:System.Windows.Forms.dll" "/r:System.Drawing.dll" "/r:System.dll" "install\Program.cs" "install\InstallManager.cs" "install\ConfigHelper.cs" "install\InstallerForm.cs"
-
-    if ($LASTEXITCODE -eq 0 -and (Test-Path $installerExe)) {
-        Write-Host "SUCCESS: Built GUI Installer at $installerExe"
+    if ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $publishDir "BrBrDbTelemetryInstaller.exe"))) {
+        Copy-Item (Join-Path $publishDir "BrBrDbTelemetryInstaller.exe") -Destination "install/BrBrDbTelemetryInstaller.exe" -Force
+        Write-Host "SUCCESS: Built GUI Installer at install/BrBrDbTelemetryInstaller.exe"
     } else {
         Write-Error "C# Installer compilation failed!"
         exit $LASTEXITCODE

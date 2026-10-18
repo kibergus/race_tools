@@ -530,6 +530,43 @@ namespace BrBrDbTelemetry
             return meta;
         }
 
+        public static void CompressBrotli(Stream input, Stream output, int quality = 4)
+        {
+            using (var encoder = new System.IO.Compression.BrotliEncoder(quality, 22))
+            {
+                byte[] inBuf = new byte[65536];
+                byte[] outBuf = new byte[65536 * 2];
+                int bytesRead;
+                while ((bytesRead = input.Read(inBuf, 0, inBuf.Length)) > 0)
+                {
+                    var source = inBuf.AsSpan(0, bytesRead);
+                    while (!source.IsEmpty)
+                    {
+                        var status = encoder.Compress(source, outBuf, out int bytesConsumed, out int bytesWritten, isFinalBlock: false);
+                        if (status == System.Buffers.OperationStatus.Done || status == System.Buffers.OperationStatus.DestinationTooSmall)
+                        {
+                            if (bytesWritten > 0) output.Write(outBuf, 0, bytesWritten);
+                            source = source.Slice(bytesConsumed);
+                        }
+                        else
+                        {
+                            throw new InvalidOperationException("Brotli compression failed with status: " + status);
+                        }
+                    }
+                }
+                while (true)
+                {
+                    var status = encoder.Compress(ReadOnlySpan<byte>.Empty, outBuf, out _, out int bytesWritten, isFinalBlock: true);
+                    if (bytesWritten > 0) output.Write(outBuf, 0, bytesWritten);
+                    if (status == System.Buffers.OperationStatus.Done) break;
+                    if (status != System.Buffers.OperationStatus.DestinationTooSmall)
+                    {
+                        throw new InvalidOperationException("Brotli finalization failed with status: " + status);
+                    }
+                }
+            }
+        }
+
         public static bool UploadSessionFile(string filePath, string serverAddress, string apiKey, out string errorMessage)
         {
             errorMessage = "";
@@ -546,6 +583,7 @@ namespace BrBrDbTelemetry
             }
 
             int maxRetries = 5;
+            bool tryCompressed = true;
             for (int attempt = 1; attempt <= maxRetries; attempt++)
             {
                 try
@@ -557,6 +595,11 @@ namespace BrBrDbTelemetry
                     request.Timeout = 180000; // 3 minutes timeout for telemetry upload
                     request.SendChunked = true;
 
+                    if (tryCompressed)
+                    {
+                        request.Headers["Content-Encoding"] = "br";
+                    }
+
                     if (!string.IsNullOrEmpty(apiKey))
                     {
                         request.Headers["X-API-Key"] = apiKey;
@@ -565,11 +608,18 @@ namespace BrBrDbTelemetry
                     using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                     using (Stream reqStream = request.GetRequestStream())
                     {
-                        byte[] buffer = new byte[65536];
-                        int bytesRead;
-                        while ((bytesRead = fs.Read(buffer, 0, buffer.Length)) > 0)
+                        if (tryCompressed)
                         {
-                            reqStream.Write(buffer, 0, bytesRead);
+                            CompressBrotli(fs, reqStream, 4);
+                        }
+                        else
+                        {
+                            byte[] buffer = new byte[65536];
+                            int bytesRead;
+                            while ((bytesRead = fs.Read(buffer, 0, buffer.Length)) > 0)
+                            {
+                                reqStream.Write(buffer, 0, bytesRead);
+                            }
                         }
                     }
 
@@ -583,6 +633,11 @@ namespace BrBrDbTelemetry
                         {
                             errorMessage = string.Format("Server returned status code {0} ({1}).", (int)response.StatusCode, response.StatusDescription);
                             int code = (int)response.StatusCode;
+                            if (tryCompressed && (code == 415 || code == 400 || code == 500))
+                            {
+                                tryCompressed = false;
+                                continue;
+                            }
                             if (code >= 400 && code < 500 && code != 408 && code != 429)
                             {
                                 return false; // Non-retryable client error
@@ -609,6 +664,11 @@ namespace BrBrDbTelemetry
                         }
 
                         int code = (int)resp.StatusCode;
+                        if (tryCompressed && (code == 415 || code == 400 || code == 500))
+                        {
+                            tryCompressed = false;
+                            continue;
+                        }
                         if (code >= 400 && code < 500 && code != 408 && code != 429)
                         {
                             return false; // Non-retryable client error

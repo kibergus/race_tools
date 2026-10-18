@@ -40,32 +40,22 @@ jobs:
         Copy-Item BrBrTelemetry.test.json -Destination build\bin\Release\BrBrDbTelemetry.json -Force
         ctest --test-dir build -C Release --output-on-failure
 
-    - name: Compile C# WinForms installer
+    - name: Run C# installer unit tests
+      working-directory: rfactor_plugin
+      run: dotnet run --project install/BrBrDbTelemetryInstallerTests.csproj
+
+    - name: Publish C# WinForms installer (Self-Contained .NET 8)
       working-directory: rfactor_plugin
       shell: pwsh
       run: |
-        $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-        if (-not (Test-Path $csc)) {
-          Write-Error "csc.exe not found at $csc"
-          exit 1
-        }
         $dll = "build\bin\Release\BrBrDbTelemetry64.dll"
         if (-not (Test-Path $dll)) {
           Write-Error "Plugin DLL not found at $dll"
           exit 1
         }
-        & $csc /target:winexe `
-          /out:install\BrBrDbTelemetryInstaller.exe `
-          /win32icon:install\favicon.ico `
-          /resource:$dll `
-          /r:System.Windows.Forms.dll `
-          /r:System.Drawing.dll `
-          /r:System.dll `
-          install\Program.cs `
-          install\InstallManager.cs `
-          install\ConfigHelper.cs `
-          install\InstallerForm.cs
+        dotnet publish install/BrBrDbTelemetryInstaller.csproj -c Release -o install/publish
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Copy-Item install\publish\BrBrDbTelemetryInstaller.exe -Destination install\BrBrDbTelemetryInstaller.exe -Force
 
     - name: Upload installer EXE
       uses: actions/upload-artifact@v7
