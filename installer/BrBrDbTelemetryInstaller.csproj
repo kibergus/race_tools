@@ -4,7 +4,7 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
-    <ApplicationIcon>favicon.ico</ApplicationIcon>
+    <ApplicationIcon>..\favicon.ico</ApplicationIcon>
     <AssemblyName>BrBrDbTelemetryInstaller</AssemblyName>
     <RootNamespace>BrBrDbTelemetry</RootNamespace>
     <Nullable>disable</Nullable>
@@ -23,6 +23,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="..\rfactor_plugin\build\bin\Release\BrBrDbTelemetry64.dll" Link="BrBrDbTelemetry64.dll" Condition="Exists('..\rfactor_plugin\build\bin\Release\BrBrDbTelemetry64.dll')" />
+    <EmbeddedResource Include="..\brbrdaemon\build\bin\Release\brbrdaemon.exe" Link="brbrdaemon.exe" Condition="Exists('..\brbrdaemon\build\bin\Release\brbrdaemon.exe')" />
+    <EmbeddedResource Include="..\brbrdaemon\build\bin\Release\BrBrDbTelemetryAce.exe" Link="brbrdaemon.exe" Condition="!Exists('..\brbrdaemon\build\bin\Release\brbrdaemon.exe') And Exists('..\brbrdaemon\build\bin\Release\BrBrDbTelemetryAce.exe')" />
   </ItemGroup>
 
 </Project>

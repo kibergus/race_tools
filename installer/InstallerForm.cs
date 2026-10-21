@@ -25,11 +25,35 @@ namespace BrBrDbTelemetry
         private static readonly Color ColorDanger = Color.FromArgb(243, 139, 168); // Red
 
         // App State
+        private string selectedSimulator = "rf2"; // "rf2", "ace", "acr", or "ac"
         private string rf2Path = "";
+        private string daemonInstallPath = "";
+
+        private bool IsDaemonSimulator => selectedSimulator == "ace" || selectedSimulator == "acr" || selectedSimulator == "ac";
+
+        private string CurrentDaemonInstallPath
+        {
+            get => daemonInstallPath;
+            set => daemonInstallPath = value;
+        }
         private PluginConfig config = new PluginConfig();
         private bool isInstalled = false;
         private string installedVersion = "";
         private string selectedTab = "install";
+
+        // Simulator Selector Controls
+        private Label lblSimSelectorTitle;
+        private ComboBox cbSimulator;
+        private Label lblHeaderInstall;
+        private Label lblInstallPathHeader;
+
+        // Daemon Status & Control Widget
+        private Panel pnlDaemonStatus;
+        private Label lblDaemonStatus;
+        private CircleHelpButton btnDaemonHelp;
+        private ToolTip toolTipDaemon;
+        private Button btnDaemonToggle;
+        private System.Windows.Forms.Timer timerDaemonCheck;
 
         // Dragging variables
         private bool isDragging = false;
@@ -132,9 +156,16 @@ namespace BrBrDbTelemetry
 
         // Controls: About Tab
         private Label lblAboutStatus;
+        private Panel pnlUpdateCard;
+        private Label lblUpdateCardTitle;
+        private Label lblUpdateStatus;
+        private FlatButton btnCheckUpdates;
+        private FlatButton btnViewRelease;
         private FlatButton btnOpenConfig;
         private FlatButton btnReinstall;
         private FlatButton btnUninstall;
+        private InstallManager.GitHubReleaseInfo cachedReleaseInfo = null;
+        private bool isCheckingForUpdates = false;
 
         public InstallerForm()
         {
@@ -154,8 +185,9 @@ namespace BrBrDbTelemetry
             InitializeSidebar();
             InitializeContentArea();
 
-            // Auto-detect rFactor 2 path
+            // Auto-detect rFactor 2 path and initialize daemon paths
             rf2Path = InstallManager.DetectRFactor2Path();
+            daemonInstallPath = InstallManager.GetDefaultDaemonInstallDirectory();
             txtRf2Path.Text = rf2Path;
         }
 
@@ -163,6 +195,24 @@ namespace BrBrDbTelemetry
         {
             base.OnLoad(e);
             RefreshInstallationState();
+
+            timerDaemonCheck = new System.Windows.Forms.Timer();
+            timerDaemonCheck.Interval = 1500;
+            timerDaemonCheck.Tick += (s, ev) =>
+            {
+                if (!this.IsDisposed)
+                {
+                    UpdateDaemonStatusUI();
+                }
+            };
+            timerDaemonCheck.Start();
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            timerDaemonCheck?.Stop();
+            timerDaemonCheck?.Dispose();
+            base.OnFormClosing(e);
         }
 
         private void InitializeWindowChrome()
@@ -245,6 +295,98 @@ namespace BrBrDbTelemetry
                 BackColor = ColorSidebar
             };
 
+            lblSimSelectorTitle = new Label
+            {
+                Text = "SIMULATOR",
+                Location = new Point(16, 12),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+                ForeColor = ColorTextMuted
+            };
+            pnlSidebar.Controls.Add(lblSimSelectorTitle);
+
+            cbSimulator = new ComboBox
+            {
+                Location = new Point(14, 30),
+                Size = new Size(172, 28),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = ColorInputBg,
+                ForeColor = ColorText,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
+            };
+            cbSimulator.Items.AddRange(new object[] { "rFactor 2", "Assetto Corsa Evo", "Assetto Corsa Rally", "Assetto Corsa" });
+            cbSimulator.SelectedIndex = 0;
+            cbSimulator.SelectedIndexChanged += (s, e) => {
+                switch (cbSimulator.SelectedIndex)
+                {
+                    case 0: selectedSimulator = "rf2"; break;
+                    case 1: selectedSimulator = "ace"; break;
+                    case 2: selectedSimulator = "acr"; break;
+                    case 3: selectedSimulator = "ac"; break;
+                    default: selectedSimulator = "rf2"; break;
+                }
+                OnSimulatorChanged();
+            };
+            pnlSidebar.Controls.Add(cbSimulator);
+
+            // Daemon status & control container
+            pnlDaemonStatus = new Panel
+            {
+                Location = new Point(14, 66),
+                Size = new Size(172, 60),
+                BackColor = Color.FromArgb(30, 30, 46),
+                Visible = true
+            };
+
+            lblDaemonStatus = new Label
+            {
+                Location = new Point(6, 6),
+                Size = new Size(138, 18),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+                ForeColor = ColorTextMuted,
+                Text = "○ Daemon: Stopped"
+            };
+
+            btnDaemonHelp = new CircleHelpButton
+            {
+                Location = new Point(148, 6),
+                Size = new Size(18, 18)
+            };
+
+            toolTipDaemon = new ToolTip
+            {
+                AutoPopDelay = 9000,
+                InitialDelay = 150,
+                ReshowDelay = 100,
+                ShowAlways = true
+            };
+            const string daemonHelpMsg = "Some games like Asseto Corsa series require a separate application running in parallel to collect the telemetry.";
+            toolTipDaemon.SetToolTip(btnDaemonHelp, daemonHelpMsg);
+            btnDaemonHelp.Click += (s, e) =>
+            {
+                toolTipDaemon.Show(daemonHelpMsg, btnDaemonHelp, 0, btnDaemonHelp.Height + 4, 6000);
+            };
+
+            btnDaemonToggle = new Button
+            {
+                Location = new Point(6, 26),
+                Size = new Size(160, 26),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = ColorAccent,
+                Cursor = Cursors.Hand,
+                Text = "▶ Start Daemon"
+            };
+            btnDaemonToggle.FlatAppearance.BorderSize = 0;
+            btnDaemonToggle.Click += BtnDaemonToggle_Click;
+
+            pnlDaemonStatus.Controls.Add(lblDaemonStatus);
+            pnlDaemonStatus.Controls.Add(btnDaemonHelp);
+            pnlDaemonStatus.Controls.Add(btnDaemonToggle);
+            pnlSidebar.Controls.Add(pnlDaemonStatus);
+
             btnNavInstall = AddNavButton("install", "Install");
             btnNavUpdate = AddNavButton("update", "Update");
             btnNavGeneral = AddNavButton("general", "General Settings");
@@ -294,7 +436,15 @@ namespace BrBrDbTelemetry
         {
             tabInstall = CreateTabPanel();
 
-            CreateHeaderLabel(tabInstall, "Install BrBrTelemetry v" + InstallManager.BundledVersion, 20);
+            lblHeaderInstall = new Label
+            {
+                Text = "Install BrBrTelemetry for rF2 v" + InstallManager.BundledVersion,
+                Font = new Font("Segoe UI", 13, FontStyle.Bold),
+                ForeColor = ColorAccent,
+                Location = new Point(20, 20),
+                AutoSize = true
+            };
+            tabInstall.Controls.Add(lblHeaderInstall);
 
             // 1. Controls Panel (for normal installation)
             pnlInstallControls = new Panel
@@ -305,11 +455,20 @@ namespace BrBrDbTelemetry
             };
             tabInstall.Controls.Add(pnlInstallControls);
 
-            // Path to rFactor 2
-            CreateFieldLabel(pnlInstallControls, "rFactor 2 Installation Path:", 5);
-            txtRf2Path = CreateTextBox(pnlInstallControls, 30, 580);
+            // Path to Simulator / Daemon
+            lblInstallPathHeader = new Label
+            {
+                Text = "rFactor 2 Installation Path:",
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+                ForeColor = ColorText,
+                Location = new Point(20, 5),
+                AutoSize = true
+            };
+            pnlInstallControls.Controls.Add(lblInstallPathHeader);
+
+            txtRf2Path = CreateTextBox(pnlInstallControls, 30, 460);
             txtRf2Path.ReadOnly = true;
-            btnBrowsePath = new FlatButton("Browse...", 110, 25) { Location = new Point(500, 30), Visible = false };
+            btnBrowsePath = new FlatButton("Browse...", 110, 25) { Location = new Point(490, 30), Visible = true };
             btnBrowsePath.Click += BrowseRf2Path_Click;
             pnlInstallControls.Controls.Add(btnBrowsePath);
 
@@ -650,33 +809,81 @@ namespace BrBrDbTelemetry
 
             lblAboutStatus = new Label
             {
-                Location = new Point(20, 70),
-                Size = new Size(580, 160),
-                Font = new Font("Segoe UI", 10),
+                Location = new Point(20, 60),
+                Size = new Size(580, 115),
+                Font = new Font("Segoe UI", 9.5f),
                 ForeColor = ColorText,
                 Text = "Loading details..."
             };
             tabAbout.Controls.Add(lblAboutStatus);
 
-            btnOpenConfig = new FlatButton("Open Configuration File", 580, 40)
+            pnlUpdateCard = new Panel
             {
-                Location = new Point(20, 250),
+                Location = new Point(20, 185),
+                Size = new Size(580, 82),
+                BackColor = ColorTitleBar
+            };
+
+            lblUpdateCardTitle = new Label
+            {
+                Text = "GitHub Release Check",
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+                ForeColor = ColorText,
+                Location = new Point(14, 10),
+                AutoSize = true
+            };
+            pnlUpdateCard.Controls.Add(lblUpdateCardTitle);
+
+            lblUpdateStatus = new Label
+            {
+                Text = "Click 'Check for Updates' to query GitHub.",
+                Font = new Font("Segoe UI", 8.5f),
+                ForeColor = ColorTextMuted,
+                Location = new Point(14, 32),
+                Size = new Size(385, 42)
+            };
+            pnlUpdateCard.Controls.Add(lblUpdateStatus);
+
+            btnCheckUpdates = new FlatButton("Check for Updates", 160, 30)
+            {
+                Location = new Point(406, 10),
+                BackColor = ColorInputBg,
+                Font = new Font("Segoe UI", 8.5f)
+            };
+            btnCheckUpdates.Click += (s, e) => TriggerGitHubUpdateCheck(forceRefresh: true);
+            pnlUpdateCard.Controls.Add(btnCheckUpdates);
+
+            btnViewRelease = new FlatButton("View on GitHub", 160, 30)
+            {
+                Location = new Point(406, 44),
+                BackColor = ColorAccent,
+                Font = new Font("Segoe UI", 8.5f),
+                Visible = false
+            };
+            btnViewRelease.Click += ViewRelease_Click;
+            pnlUpdateCard.Controls.Add(btnViewRelease);
+
+            tabAbout.Controls.Add(pnlUpdateCard);
+
+            btnOpenConfig = new FlatButton("Open Configuration File", 580, 36)
+            {
+                Location = new Point(20, 280),
                 BackColor = ColorInputBg
             };
             btnOpenConfig.Click += OpenConfig_Click;
             tabAbout.Controls.Add(btnOpenConfig);
 
-            btnReinstall = new FlatButton("Reinstall BrBrDb Telemetry", 580, 40)
+            btnReinstall = new FlatButton("Reinstall BrBrDb Telemetry", 580, 36)
             {
-                Location = new Point(20, 310),
+                Location = new Point(20, 326),
                 BackColor = ColorAccent
             };
             btnReinstall.Click += Reinstall_Click;
             tabAbout.Controls.Add(btnReinstall);
 
-            btnUninstall = new FlatButton("Uninstall BrBrDb Telemetry", 580, 40)
+            btnUninstall = new FlatButton("Uninstall BrBrDb Telemetry", 580, 36)
             {
-                Location = new Point(20, 370),
+                Location = new Point(20, 372),
                 BackColor = ColorDanger
             };
             btnUninstall.Click += Uninstall_Click;
@@ -803,11 +1010,55 @@ namespace BrBrDbTelemetry
             tabLogs.Controls.Add(btnRefreshLogs);
         }
 
+        private string GetActiveConfigPath()
+        {
+            if (IsDaemonSimulator)
+                return Path.Combine(CurrentDaemonInstallPath, "BrBrDbTelemetry.json");
+            return Path.Combine(rf2Path, @"Bin64\Plugins\BrBrDbTelemetry.json");
+        }
+
+        private string GetActiveLogPath()
+        {
+            if (IsDaemonSimulator)
+                return InstallManager.GetDaemonLogFilePath(CurrentDaemonInstallPath);
+            return InstallManager.GetLogFilePath(rf2Path);
+        }
+
+        private string GetActiveSessionsPath()
+        {
+            if (IsDaemonSimulator)
+                return InstallManager.GetAceSessionsDirectoryPath(config.sinks.Find(s => s.type == "file")?.path, CurrentDaemonInstallPath);
+            return InstallManager.GetSessionsDirectoryPath(rf2Path, config);
+        }
+
+        private void OnSimulatorChanged()
+        {
+            if (IsDaemonSimulator)
+            {
+                string simName = InstallManager.GetSimulatorDisplayName(selectedSimulator);
+                lblInstallPathHeader.Text = "Assetto Corsa Telemetry Daemon Folder:";
+                txtRf2Path.Text = CurrentDaemonInstallPath;
+                lblHeaderInstall.Text = "Install BrBrDb Telemetry for " + simName + " v" + InstallManager.BundledAceVersion;
+            }
+            else
+            {
+                lblInstallPathHeader.Text = "rFactor 2 Installation Path:";
+                txtRf2Path.Text = rf2Path;
+                lblHeaderInstall.Text = "Install BrBrDb Telemetry for rF2 v" + InstallManager.BundledVersion;
+            }
+            RefreshInstallationState();
+            cachedReleaseInfo = null;
+            if (tabAbout != null && tabAbout.Visible)
+            {
+                TriggerGitHubUpdateCheck(forceRefresh: true);
+            }
+        }
+
         private void RefreshSessionsList()
         {
             lvSessions.Items.Clear();
 
-            string dirPath = InstallManager.GetSessionsDirectoryPath(rf2Path, config);
+            string dirPath = GetActiveSessionsPath();
             lblSessionsStatus.Text = "Directory: " + dirPath;
 
             FileInfo[] files = InstallManager.GetSessionFiles(dirPath);
@@ -870,7 +1121,7 @@ namespace BrBrDbTelemetry
 
         private void RefreshLogsContent()
         {
-            string logPath = InstallManager.GetLogFilePath(rf2Path);
+            string logPath = GetActiveLogPath();
             lblLogPathStatus.Text = "Log File: " + logPath;
 
             if (!string.IsNullOrEmpty(logPath) && File.Exists(logPath))
@@ -898,7 +1149,7 @@ namespace BrBrDbTelemetry
 
         private void OpenSessionsDir_Click(object sender, EventArgs e)
         {
-            string dirPath = InstallManager.GetSessionsDirectoryPath(rf2Path, config);
+            string dirPath = GetActiveSessionsPath();
             if (lvSessions.SelectedItems.Count > 0)
             {
                 var meta = lvSessions.SelectedItems[0].Tag as InstallManager.SessionMetadata;
@@ -1167,7 +1418,7 @@ namespace BrBrDbTelemetry
 
         private void OpenLogExternal_Click(object sender, EventArgs e)
         {
-            string logPath = InstallManager.GetLogFilePath(rf2Path);
+            string logPath = GetActiveLogPath();
             if (!string.IsNullOrEmpty(logPath) && File.Exists(logPath))
             {
                 try
@@ -1243,6 +1494,72 @@ namespace BrBrDbTelemetry
 
         private void RefreshInstallationState()
         {
+            if (IsDaemonSimulator)
+            {
+                pnlInstallControls.Visible = true;
+                pnlInstallError.Visible = false;
+                btnInstall.Enabled = true;
+                btnOpenConfig.Enabled = true;
+                btnReinstall.Enabled = true;
+
+                bool isRunning = false;
+                bool isAutostart = false;
+                isInstalled = InstallManager.GetInstalledDaemonDetails(selectedSimulator, CurrentDaemonInstallPath, out installedVersion, out isRunning, out isAutostart);
+
+                string activeBundled = InstallManager.BundledAceVersion;
+                if (isInstalled)
+                {
+                    btnUninstall.Enabled = true;
+                    bool isNewer = InstallManager.IsInstalledVersionNewer(installedVersion, activeBundled);
+                    btnNavUpdate.LabelText = isNewer ? "Downgrade" : "Update";
+
+                    if (installedVersion != activeBundled)
+                    {
+                        btnInstall.Text = isNewer ? "Downgrade Telemetry Daemon" : "Update Telemetry Daemon";
+                        lblUpdateHeader.Text = isNewer ? "Downgrade BrBrDb Telemetry" : "Update BrBrDb Telemetry";
+                        btnUpdate.Text = isNewer ? "Downgrade" : "Update";
+                        lblUpdateQuestion.Text = string.Format(
+                            isNewer 
+                                ? "A newer version of the daemon is installed (v{0}). Downgrade BrBrDbTelemetry to version {1}?" 
+                                : "An older version of the daemon is installed (v{0}). Update BrBrDbTelemetry to version {1}?", 
+                            installedVersion, 
+                            activeBundled
+                        );
+                    }
+                    else
+                    {
+                        btnInstall.Text = "Reinstall Telemetry Daemon";
+                    }
+
+                    LoadConfigFromFile();
+                }
+                else
+                {
+                    btnInstall.Text = "Install Telemetry Daemon";
+                    btnUninstall.Enabled = false;
+                    btnNavUpdate.LabelText = "Update";
+                }
+
+                string simName = InstallManager.GetSimulatorDisplayName(selectedSimulator);
+                lblAboutStatus.Text = string.Format("Assetto Corsa Telemetry Daemon Status:\n" +
+                                      "--------------------------------------\n" +
+                                      "Configuring Simulator: {0}\n" +
+                                      "Shared Daemon Folder: {1}\n" +
+                                      "Daemon Installed: {2}\n" +
+                                      "Daemon Running: {3}\n" +
+                                      "Windows Autostart: {4}\n" +
+                                      "\nBundled Daemon Version: v{5}", 
+                                      simName,
+                                      CurrentDaemonInstallPath, 
+                                      isInstalled ? "Yes (v" + installedVersion + ")" : "No", 
+                                      isRunning ? "Yes (Running)" : "No (Stopped)", 
+                                      isAutostart ? "Enabled" : "Disabled", 
+                                      activeBundled);
+
+                UpdateNavigationButtons();
+                return;
+            }
+
             if (string.IsNullOrEmpty(rf2Path) || !InstallManager.IsValidRF2Directory(rf2Path))
             {
                 isInstalled = false;
@@ -1324,16 +1641,18 @@ namespace BrBrDbTelemetry
 
         private void UpdateNavigationButtons()
         {
-            bool autoPathError = string.IsNullOrEmpty(rf2Path) || !InstallManager.IsValidRF2Directory(rf2Path);
+            bool autoPathError = (selectedSimulator == "rf2") && (string.IsNullOrEmpty(rf2Path) || !InstallManager.IsValidRF2Directory(rf2Path));
+
+            string activeBundled = IsDaemonSimulator ? InstallManager.BundledAceVersion : InstallManager.BundledVersion;
 
             // Install tab is visible ONLY if path error OR not installed
             btnNavInstall.Visible = autoPathError || !isInstalled;
 
             // Update tab is visible ONLY if path is valid AND installed AND outdated
-            btnNavUpdate.Visible = !autoPathError && isInstalled && (installedVersion != InstallManager.BundledVersion);
+            btnNavUpdate.Visible = !autoPathError && isInstalled && (installedVersion != activeBundled);
 
             // Configuration tabs are visible ONLY if path is valid AND installed AND up-to-date
-            bool configVisible = !autoPathError && isInstalled && (installedVersion == InstallManager.BundledVersion);
+            bool configVisible = !autoPathError && isInstalled && (installedVersion == activeBundled);
             btnNavGeneral.Visible = configVisible;
             btnNavSinks.Visible = configVisible;
             btnNavOverrides.Visible = configVisible;
@@ -1341,8 +1660,10 @@ namespace BrBrDbTelemetry
             btnNavLogs.Visible = configVisible;
             btnNavManage.Visible = configVisible;
 
-            // Reposition visible sidebar buttons
-            int startY = 20;
+            UpdateDaemonStatusUI();
+
+            // Reposition visible sidebar buttons below simulator dropdown and daemon status panel
+            int startY = 134;
             foreach (var btn in navButtons)
             {
                 if (btn.Visible)
@@ -1384,9 +1705,46 @@ namespace BrBrDbTelemetry
             return false;
         }
 
+        private void UpdateDaemonStatusUI()
+        {
+            if (pnlDaemonStatus != null)
+                pnlDaemonStatus.Visible = true;
+
+            bool isRunning = InstallManager.IsDaemonRunning();
+            if (isRunning)
+            {
+                lblDaemonStatus.Text = "● Daemon: Running";
+                lblDaemonStatus.ForeColor = ColorSuccess;
+                btnDaemonToggle.Text = "⏹ Stop Daemon";
+                btnDaemonToggle.BackColor = ColorDanger;
+                btnDaemonToggle.FlatAppearance.MouseOverBackColor = Color.FromArgb(235, 111, 146);
+            }
+            else
+            {
+                lblDaemonStatus.Text = "○ Daemon: Stopped";
+                lblDaemonStatus.ForeColor = ColorTextMuted;
+                btnDaemonToggle.Text = "▶ Start Daemon";
+                btnDaemonToggle.BackColor = ColorAccent;
+                btnDaemonToggle.FlatAppearance.MouseOverBackColor = ColorAccentHover;
+            }
+        }
+
+        private void BtnDaemonToggle_Click(object sender, EventArgs e)
+        {
+            if (InstallManager.IsDaemonRunning())
+            {
+                InstallManager.StopDaemon();
+            }
+            else
+            {
+                InstallManager.StartDaemon(CurrentDaemonInstallPath);
+            }
+            UpdateDaemonStatusUI();
+        }
+
         private void LoadConfigFromFile()
         {
-            string configPath = Path.Combine(rf2Path, @"Bin64\Plugins\BrBrDbTelemetry.json");
+            string configPath = GetActiveConfigPath();
             if (File.Exists(configPath))
             {
                 try
@@ -1395,9 +1753,17 @@ namespace BrBrDbTelemetry
                     config = ConfigHelper.Deserialize(json);
                     
                     // Bind fields
-                    txtCarRegexp.Text = config.car_name_regexp;
+                    if (IsDaemonSimulator)
+                    {
+                        txtCarRegexp.Text = config.GetCarRegexpForSimulator(selectedSimulator);
+                        txtLeague.Text = config.GetLeagueForSimulator(selectedSimulator);
+                    }
+                    else
+                    {
+                        txtCarRegexp.Text = config.car_name_regexp;
+                        txtLeague.Text = config.league;
+                    }
                     txtKartNumberFilter.Text = config.kart_number_filter;
-                    txtLeague.Text = config.league;
                     chkAllParticipantsInRace.Checked = config.all_participants_in_race;
 
                     // Bind install tab config from file if present
@@ -1421,10 +1787,7 @@ namespace BrBrDbTelemetry
 
         private bool HasTabUnsavedChanges(string tabId)
         {
-            if (string.IsNullOrEmpty(rf2Path) || !InstallManager.IsValidRF2Directory(rf2Path))
-                return false;
-
-            string configPath = Path.Combine(rf2Path, @"Bin64\Plugins\BrBrDbTelemetry.json");
+            string configPath = GetActiveConfigPath();
             if (!File.Exists(configPath))
                 return false;
 
@@ -1435,9 +1798,11 @@ namespace BrBrDbTelemetry
 
                 if (tabId == "general")
                 {
-                    return txtCarRegexp.Text != diskConfig.car_name_regexp ||
+                    string expectedCar = IsDaemonSimulator ? diskConfig.GetCarRegexpForSimulator(selectedSimulator) : diskConfig.car_name_regexp;
+                    string expectedLeague = IsDaemonSimulator ? diskConfig.GetLeagueForSimulator(selectedSimulator) : diskConfig.league;
+                    return txtCarRegexp.Text != expectedCar ||
                            txtKartNumberFilter.Text != diskConfig.kart_number_filter ||
-                           txtLeague.Text != diskConfig.league ||
+                           txtLeague.Text != expectedLeague ||
                            chkAllParticipantsInRace.Checked != diskConfig.all_participants_in_race;
                 }
                 else if (tabId == "sinks")
@@ -1476,9 +1841,17 @@ namespace BrBrDbTelemetry
                 {
                     if (selectedTab == "general")
                     {
-                        config.car_name_regexp = txtCarRegexp.Text;
+                        if (IsDaemonSimulator)
+                        {
+                            config.SetCarRegexpForSimulator(selectedSimulator, txtCarRegexp.Text);
+                            config.SetLeagueForSimulator(selectedSimulator, txtLeague.Text);
+                        }
+                        else
+                        {
+                            config.car_name_regexp = txtCarRegexp.Text;
+                            config.league = txtLeague.Text;
+                        }
                         config.kart_number_filter = txtKartNumberFilter.Text;
-                        config.league = txtLeague.Text;
                         config.all_participants_in_race = chkAllParticipantsInRace.Checked;
                     }
                     SaveConfigToDisk();
@@ -1524,7 +1897,7 @@ namespace BrBrDbTelemetry
             else if (tabId == "overrides") tabOverrides.Visible = true;
             else if (tabId == "sessions" && tabSessions != null) { tabSessions.Visible = true; RefreshSessionsList(); }
             else if (tabId == "logs" && tabLogs != null) { tabLogs.Visible = true; RefreshLogsContent(); }
-            else if (tabId == "manage") tabAbout.Visible = true;
+            else if (tabId == "manage") { tabAbout.Visible = true; TriggerGitHubUpdateCheck(); }
         }
 
         #region Install Events
@@ -1532,18 +1905,33 @@ namespace BrBrDbTelemetry
         {
             using (var fbd = new FolderBrowserDialog())
             {
-                fbd.Description = "Select your rFactor 2 Installation Folder";
-                if (fbd.ShowDialog() == DialogResult.OK)
+                if (IsDaemonSimulator)
                 {
-                    if (InstallManager.IsValidRF2Directory(fbd.SelectedPath))
+                    string simName = InstallManager.GetSimulatorDisplayName(selectedSimulator);
+                    fbd.Description = "Select Folder to Install " + simName + " Telemetry Daemon";
+                    fbd.SelectedPath = CurrentDaemonInstallPath;
+                    if (fbd.ShowDialog() == DialogResult.OK)
                     {
-                        rf2Path = fbd.SelectedPath;
-                        txtRf2Path.Text = rf2Path;
+                        CurrentDaemonInstallPath = fbd.SelectedPath;
+                        txtRf2Path.Text = CurrentDaemonInstallPath;
                         RefreshInstallationState();
                     }
-                    else
+                }
+                else
+                {
+                    fbd.Description = "Select your rFactor 2 Installation Folder";
+                    if (fbd.ShowDialog() == DialogResult.OK)
                     {
-                        MessageBox.Show("The selected folder is not a valid rFactor 2 installation. It must contain the 'Bin64\\Plugins' subfolder.", "Invalid Directory", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        if (InstallManager.IsValidRF2Directory(fbd.SelectedPath))
+                        {
+                            rf2Path = fbd.SelectedPath;
+                            txtRf2Path.Text = rf2Path;
+                            RefreshInstallationState();
+                        }
+                        else
+                        {
+                            MessageBox.Show("The selected folder is not a valid rFactor 2 installation. It must contain the 'Bin64\\Plugins' subfolder.", "Invalid Directory", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        }
                     }
                 }
             }
@@ -1563,6 +1951,35 @@ namespace BrBrDbTelemetry
 
         private void Install_Click(object sender, EventArgs e)
         {
+            if (IsDaemonSimulator)
+            {
+                if (string.IsNullOrEmpty(txtApiKeyInstall.Text.Trim()))
+                {
+                    MessageBox.Show("API Key is required.", "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                try
+                {
+                    InstallManager.InstallDaemonPlugin(
+                        selectedSimulator,
+                        CurrentDaemonInstallPath,
+                        txtApiKeyInstall.Text.Trim(),
+                        txtTelemetryPathInstall.Text.Trim(),
+                        enableAutostart: true
+                    );
+
+                    string simName = InstallManager.GetSimulatorDisplayName(selectedSimulator);
+                    MessageBox.Show(simName + " telemetry daemon installed, configured, and started!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshInstallationState();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Installation failed:\n" + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                return;
+            }
+
             if (!InstallManager.IsValidRF2Directory(rf2Path))
             {
                 MessageBox.Show("Please select a valid rFactor 2 directory first.", "Invalid Path", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -1594,6 +2011,25 @@ namespace BrBrDbTelemetry
 
         private void Update_Click(object sender, EventArgs e)
         {
+            if (IsDaemonSimulator)
+            {
+                try
+                {
+                    bool isNewer = InstallManager.IsInstalledVersionNewer(installedVersion, InstallManager.BundledAceVersion);
+                    InstallManager.InstallDaemonPlugin(selectedSimulator, CurrentDaemonInstallPath, "", "", enableAutostart: true);
+
+                    string simName = InstallManager.GetSimulatorDisplayName(selectedSimulator);
+                    string actionText = isNewer ? "downgraded" : "updated";
+                    MessageBox.Show(simName + " daemon " + actionText + " successfully to version " + InstallManager.BundledAceVersion + "!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshInstallationState();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Update failed:\n" + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                return;
+            }
+
             try
             {
                 bool isNewer = InstallManager.IsInstalledVersionNewer(installedVersion, InstallManager.BundledVersion);
@@ -1611,6 +2047,22 @@ namespace BrBrDbTelemetry
 
         private void Reinstall_Click(object sender, EventArgs e)
         {
+            if (IsDaemonSimulator)
+            {
+                try
+                {
+                    InstallManager.InstallDaemonPlugin(selectedSimulator, CurrentDaemonInstallPath, "", "", enableAutostart: true);
+                    string simName = InstallManager.GetSimulatorDisplayName(selectedSimulator);
+                    MessageBox.Show(simName + " daemon reinstalled successfully!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshInstallationState();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Reinstallation failed:\n" + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                return;
+            }
+
             try
             {
                 InstallManager.InstallPlugin(rf2Path, "", "");
@@ -1634,13 +2086,24 @@ namespace BrBrDbTelemetry
                 return;
             }
 
-            config.car_name_regexp = txtCarRegexp.Text;
+            if (IsDaemonSimulator)
+            {
+                config.SetCarRegexpForSimulator(selectedSimulator, txtCarRegexp.Text);
+                config.SetLeagueForSimulator(selectedSimulator, txtLeague.Text);
+            }
+            else
+            {
+                config.car_name_regexp = txtCarRegexp.Text;
+                config.league = txtLeague.Text;
+            }
             config.kart_number_filter = txtKartNumberFilter.Text;
-            config.league = txtLeague.Text;
             config.all_participants_in_race = chkAllParticipantsInRace.Checked;
 
-            SaveConfigToDisk();
-            MessageBox.Show("General settings saved successfully!", "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            bool restarted = SaveConfigToDisk();
+            string msg = restarted
+                ? "General settings saved successfully!\nTelemetry daemon was restarted with the new configuration."
+                : "General settings saved successfully!";
+            MessageBox.Show(msg, "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         #endregion
 
@@ -1778,8 +2241,11 @@ namespace BrBrDbTelemetry
                 MessageBox.Show("Plugin must be installed to save configuration.", "Not Installed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            SaveConfigToDisk();
-            MessageBox.Show("Sinks configuration saved successfully!", "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            bool restarted = SaveConfigToDisk();
+            string msg = restarted
+                ? "Sinks configuration saved successfully!\nTelemetry daemon was restarted with the new configuration."
+                : "Sinks configuration saved successfully!";
+            MessageBox.Show(msg, "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         #endregion
 
@@ -1876,15 +2342,18 @@ namespace BrBrDbTelemetry
                 MessageBox.Show("Plugin must be installed to save configuration.", "Not Installed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            SaveConfigToDisk();
-            MessageBox.Show("Driver Overrides configuration saved successfully!", "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            bool restarted = SaveConfigToDisk();
+            string msg = restarted
+                ? "Driver Overrides configuration saved successfully!\nTelemetry daemon was restarted with the new configuration."
+                : "Driver Overrides configuration saved successfully!";
+            MessageBox.Show(msg, "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         #endregion
 
         #region About/Uninstall Events
         private void OpenConfig_Click(object sender, EventArgs e)
         {
-            string configPath = Path.Combine(rf2Path, @"Bin64\Plugins\BrBrDbTelemetry.json");
+            string configPath = GetActiveConfigPath();
             if (File.Exists(configPath))
             {
                 try
@@ -1902,14 +2371,121 @@ namespace BrBrDbTelemetry
             }
         }
 
-        private void Uninstall_Click(object sender, EventArgs e)
+        private void ViewRelease_Click(object sender, EventArgs e)
         {
-            if (MessageBox.Show("Are you sure you want to completely uninstall the BrBrDb Telemetry plugin and delete its configuration?", "Confirm Uninstallation", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            if (cachedReleaseInfo != null && !string.IsNullOrEmpty(cachedReleaseInfo.HtmlUrl))
             {
                 try
                 {
-                    InstallManager.UninstallPlugin(rf2Path);
-                    MessageBox.Show("Plugin successfully uninstalled.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(cachedReleaseInfo.HtmlUrl)
+                    {
+                        UseShellExecute = true
+                    });
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Could not open browser: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private async void TriggerGitHubUpdateCheck(bool forceRefresh = false)
+        {
+            if (isCheckingForUpdates)
+                return;
+
+            if (!forceRefresh && cachedReleaseInfo != null)
+            {
+                UpdateGitHubReleaseUI(cachedReleaseInfo);
+                return;
+            }
+
+            isCheckingForUpdates = true;
+            btnCheckUpdates.Enabled = false;
+            lblUpdateStatus.ForeColor = ColorTextMuted;
+            lblUpdateStatus.Text = "Querying GitHub for latest release...";
+
+            string activeBundled = IsDaemonSimulator ? InstallManager.BundledAceVersion : InstallManager.BundledVersion;
+
+            try
+            {
+                var release = await InstallManager.CheckForGitHubUpdateAsync(activeBundled);
+                cachedReleaseInfo = release;
+                if (!this.IsDisposed)
+                {
+                    UpdateGitHubReleaseUI(release);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!this.IsDisposed)
+                {
+                    lblUpdateStatus.ForeColor = ColorWarning;
+                    lblUpdateStatus.Text = "Update check failed: " + ex.Message;
+                }
+            }
+            finally
+            {
+                if (!this.IsDisposed)
+                {
+                    isCheckingForUpdates = false;
+                    btnCheckUpdates.Enabled = true;
+                }
+            }
+        }
+
+        private void UpdateGitHubReleaseUI(InstallManager.GitHubReleaseInfo release)
+        {
+            if (release == null)
+                return;
+
+            string activeBundled = IsDaemonSimulator ? InstallManager.BundledAceVersion : InstallManager.BundledVersion;
+
+            if (!release.Success)
+            {
+                lblUpdateStatus.ForeColor = ColorWarning;
+                lblUpdateStatus.Text = string.IsNullOrEmpty(release.ErrorMessage)
+                    ? "Unable to retrieve GitHub release status."
+                    : release.ErrorMessage;
+                btnViewRelease.Visible = false;
+                return;
+            }
+
+            if (release.IsNewer)
+            {
+                lblUpdateStatus.ForeColor = ColorAccentHover;
+                string dateStr = release.PublishedAt.HasValue ? string.Format(" ({0})", release.PublishedAt.Value.ToString("MMM d, yyyy")) : "";
+                lblUpdateStatus.Text = string.Format("New release available: {0}{1}!\nCurrent version: v{2}", 
+                    release.TagName, dateStr, activeBundled);
+                btnViewRelease.Visible = true;
+                btnViewRelease.Text = "View " + release.TagName;
+            }
+            else
+            {
+                lblUpdateStatus.ForeColor = ColorSuccess;
+                lblUpdateStatus.Text = string.Format("You have the latest version (v{0}).\nGitHub release: {1}", 
+                    activeBundled, release.TagName);
+                btnViewRelease.Visible = true;
+                btnViewRelease.Text = "View on GitHub";
+            }
+        }
+
+        private void Uninstall_Click(object sender, EventArgs e)
+        {
+            string simName = IsDaemonSimulator ? (InstallManager.GetSimulatorDisplayName(selectedSimulator) + " telemetry daemon") : "rFactor 2 telemetry plugin";
+            if (MessageBox.Show(string.Format("Are you sure you want to completely uninstall the {0} and delete its configuration?", simName), "Confirm Uninstallation", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            {
+                try
+                {
+                    if (IsDaemonSimulator)
+                    {
+                        InstallManager.UninstallDaemonPlugin(selectedSimulator, CurrentDaemonInstallPath);
+                    }
+                    else
+                    {
+                        InstallManager.UninstallPlugin(rf2Path);
+                    }
+                    MessageBox.Show(simName + " successfully uninstalled.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     RefreshInstallationState();
                 }
                 catch (Exception ex)
@@ -1920,17 +2496,31 @@ namespace BrBrDbTelemetry
         }
         #endregion
 
-        private void SaveConfigToDisk()
+        private bool SaveConfigToDisk()
         {
             try
             {
-                string configPath = Path.Combine(rf2Path, @"Bin64\Plugins\BrBrDbTelemetry.json");
+                string configPath = GetActiveConfigPath();
+                string dir = Path.GetDirectoryName(configPath);
+                if (!Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
                 string configJson = ConfigHelper.Serialize(config);
                 File.WriteAllText(configPath, configJson, Encoding.UTF8);
+
+                // If the telemetry daemon is currently running,
+                // restart the daemon so the newly saved configuration takes effect immediately.
+                if (InstallManager.IsDaemonRunning())
+                {
+                    InstallManager.RestartDaemon(CurrentDaemonInstallPath);
+                    UpdateDaemonStatusUI();
+                    return true;
+                }
+                return false;
             }
             catch (Exception ex)
             {
                 MessageBox.Show("Failed to save config: " + ex.Message, "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
             }
         }
 
@@ -2091,6 +2681,52 @@ namespace BrBrDbTelemetry
                     Alignment = StringAlignment.Near
                 };
                 g.DrawString(LabelText, new Font("Segoe UI", 9.5f, isActive ? FontStyle.Bold : FontStyle.Regular), brush, new Rectangle(15, 0, this.Width - 15, this.Height), sf);
+            }
+        }
+    }
+
+    public class CircleHelpButton : Control
+    {
+        private bool isHovered = false;
+
+        public CircleHelpButton()
+        {
+            this.Size = new Size(16, 16);
+            this.Cursor = Cursors.Hand;
+            this.DoubleBuffered = true;
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            base.OnMouseEnter(e);
+            isHovered = true;
+            Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            isHovered = false;
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            Color circleColor = isHovered ? Color.FromArgb(166, 129, 246) : Color.FromArgb(166, 173, 200);
+            using (var pen = new Pen(circleColor, 1.2f))
+            {
+                g.DrawEllipse(pen, 1, 1, Width - 3, Height - 3);
+            }
+
+            using (var font = new Font("Segoe UI", 8.0f, FontStyle.Bold))
+            using (var brush = new SolidBrush(circleColor))
+            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            {
+                g.DrawString("?", font, brush, new RectangleF(0, 0, Width, Height), sf);
             }
         }
     }

@@ -388,7 +388,7 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
   auto reader = telemetryQueue_.reader();
 
   const std::string csvColumnHeaders =
-      "Time,x,z,Speed,GForceLat,GForceLon,GForceVert,Throttle,Brake,Steering Angle,Lap,"
+      "Time,x,z,Speed,GForceLat,GForceLon,GForceVert,Throttle,Brake,Steering Angle,Clutch,Gear,"
       "Toe FL,Toe FR,Toe RL,Toe RR,"
       "Ori Quat X,Ori Quat Y,Ori Quat Z,Ori Quat W,"
       "RPS FL,RPS FR,RPS RL,RPS RR,"
@@ -581,9 +581,13 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(
   double gForceLon = -info.mLocalAccel.z / g_const;
   double gForceVert = info.mLocalAccel.y / g_const;
 
-  // 4. Pedals (scale 0-1 to 0-100)
+  // 4. Pedals and Inputs (scale 0-1 to 0-100)
   double throttle = info.mFilteredThrottle * 100.0;
   double brake = info.mFilteredBrake * 100.0;
+  double clutch = info.mFilteredClutch * 100.0;
+  if (clutch < 0.0) clutch = 0.0;
+  else if (clutch > 100.0) clutch = 100.0;
+  int gear = static_cast<int>(info.mGear);
 
   // 5. Steering (convert normal -1 to 1 into degrees using physical range, default 360)
   double steerRange = 360.0;
@@ -599,7 +603,7 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(
   std::stringstream ss;
   ss << std::fixed << std::setprecision(5) << timeStr << "," << info.mPos.x << "," << info.mPos.z << "," << speed
      << "," << gForceLat << "," << gForceLon << "," << gForceVert << "," << throttle << "," << brake << "," << steering
-     << "," << info.mLapNumber << ",";
+     << "," << clutch << "," << gear << ",";
 
   // Wheels Toe FL, FR, RL, RR
   ss << info.mWheel[0].mToe << "," << info.mWheel[1].mToe << "," << info.mWheel[2].mToe << "," << info.mWheel[3].mToe

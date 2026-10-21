@@ -1,0 +1,12 @@
+# Visual Studio temporary and cache files
+.vs/
+
+# Build directories
+build/
+out/
+bin/
+obj/
+publish/
+Telemetry/
+MockTelemetry/
+*.log

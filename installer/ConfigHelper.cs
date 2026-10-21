@@ -34,23 +34,81 @@ namespace BrBrDbTelemetry
         }
     }
 
+    public class SimulatorSettings
+    {
+        public string league { get; set; } = "";
+        public string car_name_regexp { get; set; } = "";
+    }
+
     public class PluginConfig
     {
+        public string simulator { get; set; }
         public string car_name_regexp { get; set; }
         public string kart_number_filter { get; set; }
         public string league { get; set; }
         public bool all_participants_in_race { get; set; }
         public List<DriverNameOverride> driver_name_overrides { get; set; }
         public List<SinkConfig> sinks { get; set; }
+        public Dictionary<string, SimulatorSettings> simulators { get; set; }
 
         public PluginConfig()
         {
+            simulator = "auto";
             car_name_regexp = "KSP.*";
             kart_number_filter = "";
             league = "kartsim";
             all_participants_in_race = false;
             driver_name_overrides = new List<DriverNameOverride>();
             sinks = new List<SinkConfig>();
+            simulators = new Dictionary<string, SimulatorSettings>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        public string GetLeagueForSimulator(string sim)
+        {
+            if (simulators != null && simulators.TryGetValue(sim, out var s) && !string.IsNullOrWhiteSpace(s.league) && s.league != "auto")
+            {
+                return s.league;
+            }
+            if (sim != "rf2" && !string.IsNullOrWhiteSpace(league) && league != "auto" && league != "kartsim")
+            {
+                return league;
+            }
+            return InstallManager.GetDefaultLeagueForSim(sim);
+        }
+
+        public void SetLeagueForSimulator(string sim, string leagueValue)
+        {
+            if (simulators == null)
+            {
+                simulators = new Dictionary<string, SimulatorSettings>(StringComparer.OrdinalIgnoreCase);
+            }
+            if (!simulators.ContainsKey(sim))
+            {
+                simulators[sim] = new SimulatorSettings();
+            }
+            simulators[sim].league = leagueValue;
+        }
+
+        public string GetCarRegexpForSimulator(string sim)
+        {
+            if (simulators != null && simulators.TryGetValue(sim, out var s) && !string.IsNullOrWhiteSpace(s.car_name_regexp))
+            {
+                return s.car_name_regexp;
+            }
+            return car_name_regexp;
+        }
+
+        public void SetCarRegexpForSimulator(string sim, string regexp)
+        {
+            if (simulators == null)
+            {
+                simulators = new Dictionary<string, SimulatorSettings>(StringComparer.OrdinalIgnoreCase);
+            }
+            if (!simulators.ContainsKey(sim))
+            {
+                simulators[sim] = new SimulatorSettings();
+            }
+            simulators[sim].car_name_regexp = regexp;
         }
     }
 
@@ -61,6 +119,10 @@ namespace BrBrDbTelemetry
         {
             var sb = new StringBuilder();
             sb.AppendLine("{");
+            if (!string.IsNullOrEmpty(config.simulator))
+            {
+                sb.AppendLine("    \"simulator\": " + EscapeString(config.simulator) + ",");
+            }
             sb.AppendLine("    \"car_name_regexp\": " + EscapeString(config.car_name_regexp) + ",");
             sb.AppendLine("    \"kart_number_filter\": " + EscapeString(config.kart_number_filter) + ",");
             sb.AppendLine("    \"league\": " + EscapeString(config.league) + ",");
@@ -101,7 +163,32 @@ namespace BrBrDbTelemetry
                 if (i < config.driver_name_overrides.Count - 1) sb.AppendLine(",");
                 else sb.AppendLine();
             }
-            sb.AppendLine("    ]");
+            sb.AppendLine("    ],");
+
+            // Simulators
+            sb.AppendLine("    \"simulators\": {");
+            var simKeys = new List<string>(config.simulators.Keys);
+            for (int i = 0; i < simKeys.Count; i++)
+            {
+                string key = simKeys[i];
+                var simSetting = config.simulators[key];
+                sb.AppendLine("        " + EscapeString(key) + ": {");
+                var props = new List<string>();
+                if (!string.IsNullOrEmpty(simSetting.league))
+                    props.Add("            \"league\": " + EscapeString(simSetting.league));
+                if (!string.IsNullOrEmpty(simSetting.car_name_regexp))
+                    props.Add("            \"car_name_regexp\": " + EscapeString(simSetting.car_name_regexp));
+                for (int p = 0; p < props.Count; p++)
+                {
+                    sb.Append(props[p]);
+                    if (p < props.Count - 1) sb.AppendLine(",");
+                    else sb.AppendLine();
+                }
+                sb.Append("        }");
+                if (i < simKeys.Count - 1) sb.AppendLine(",");
+                else sb.AppendLine();
+            }
+            sb.AppendLine("    }");
 
             sb.Append("}");
             return sb.ToString();
@@ -124,6 +211,8 @@ namespace BrBrDbTelemetry
                 var dict = root as Dictionary<string, object>;
                 if (dict != null)
                 {
+                    if (dict.ContainsKey("simulator") && dict["simulator"] is string)
+                        config.simulator = (string)dict["simulator"];
                     if (dict.ContainsKey("car_name_regexp") && dict["car_name_regexp"] is string)
                         config.car_name_regexp = (string)dict["car_name_regexp"];
                     if (dict.ContainsKey("kart_number_filter") && dict["kart_number_filter"] is string)
@@ -180,6 +269,28 @@ namespace BrBrDbTelemetry
                                         over.driver_name = (string)overDict["driver_name"];
 
                                     config.driver_name_overrides.Add(over);
+                                }
+                            }
+                        }
+                    }
+
+                    if (dict.ContainsKey("simulators"))
+                    {
+                        var simDict = dict["simulators"] as Dictionary<string, object>;
+                        if (simDict != null)
+                        {
+                            config.simulators.Clear();
+                            foreach (var kvp in simDict)
+                            {
+                                var subDict = kvp.Value as Dictionary<string, object>;
+                                if (subDict != null)
+                                {
+                                    var simSetting = new SimulatorSettings();
+                                    if (subDict.ContainsKey("league") && subDict["league"] is string)
+                                        simSetting.league = (string)subDict["league"];
+                                    if (subDict.ContainsKey("car_name_regexp") && subDict["car_name_regexp"] is string)
+                                        simSetting.car_name_regexp = (string)subDict["car_name_regexp"];
+                                    config.simulators[kvp.Key] = simSetting;
                                 }
                             }
                         }

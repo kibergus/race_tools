@@ -16,4 +16,9 @@
     <Compile Remove="InstallerForm.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="..\rfactor_plugin\build\bin\Release\BrBrDbTelemetry64.dll" Link="BrBrDbTelemetry64.dll" Condition="Exists('..\rfactor_plugin\build\bin\Release\BrBrDbTelemetry64.dll')" />
+    <EmbeddedResource Include="..\brbrdaemon\build\bin\Release\brbrdaemon.exe" Link="brbrdaemon.exe" Condition="Exists('..\brbrdaemon\build\bin\Release\brbrdaemon.exe')" />
+  </ItemGroup>
+
 </Project>

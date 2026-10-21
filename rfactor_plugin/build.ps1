@@ -11,6 +11,13 @@ $ErrorActionPreference = "Stop"
 # regardless of the working directory of the caller (e.g. VS Code, CI, command line).
 Set-Location $PSScriptRoot
 
+# Ensure latest git tags are fetched so version metadata matches GitHub releases
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    try {
+        git fetch --tags origin 2>$null
+    } catch {}
+}
+
 # Disable MSBuild node reuse to prevent background processes from holding output pipes open,
 # which can cause VS Code tasks and debug sessions to hang indefinitely.
 $env:MSBUILDDISABLENODEREUSE = "1"

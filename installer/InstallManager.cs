@@ -5,6 +5,11 @@ using System.Text.RegularExpressions;
 using System.Reflection;
 using System.Diagnostics;
 using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32;
 
 namespace BrBrDbTelemetry
@@ -48,6 +53,537 @@ namespace BrBrDbTelemetry
                 }
                 return _cachedBundledVersion;
             }
+        }
+
+        private static string _cachedBundledAceVersion = null;
+        public static string BundledAceVersion => BundledDaemonVersion;
+
+        public static string BundledDaemonVersion
+        {
+            get
+            {
+                if (_cachedBundledAceVersion == null)
+                {
+                    string tempPath = null;
+                    try
+                    {
+                        string tempDir = Path.GetTempPath();
+                        string tempFileName = string.Format("brbrdaemon_temp_{0}.exe", Guid.NewGuid().ToString("N"));
+                        tempPath = Path.Combine(tempDir, tempFileName);
+                        try
+                        {
+                            ExtractEmbeddedResource("brbrdaemon.exe", tempPath);
+                        }
+                        catch
+                        {
+                            ExtractEmbeddedResource("BrBrDbTelemetryAce.exe", tempPath);
+                        }
+                        
+                        var vi = FileVersionInfo.GetVersionInfo(tempPath);
+                        if (vi.FileMajorPart == 0 && vi.FileMinorPart == 0 && vi.FileBuildPart == 0)
+                        {
+                            throw new InvalidOperationException("Could not retrieve version details from the embedded daemon executable.");
+                        }
+                        _cachedBundledAceVersion = string.Format("{0}.{1}.{2}", vi.FileMajorPart, vi.FileMinorPart, vi.FileBuildPart);
+                    }
+                    catch
+                    {
+                        _cachedBundledAceVersion = "1.0.0";
+                    }
+                    finally
+                    {
+                        if (tempPath != null && File.Exists(tempPath))
+                        {
+                            try { File.Delete(tempPath); } catch { }
+                        }
+                    }
+                }
+                return _cachedBundledAceVersion;
+            }
+        }
+
+        // Locates the Assetto Corsa Evo directory automatically via Steam registry/libraries
+        public static string DetectACEvoPath()
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam"))
+                {
+                    if (key != null)
+                    {
+                        string steamPath = key.GetValue("SteamPath") as string;
+                        if (!string.IsNullOrEmpty(steamPath))
+                        {
+                            steamPath = steamPath.Replace('/', '\\');
+                            
+                            // 1. Check primary Steam library path
+                            string primaryPath = Path.Combine(steamPath, @"steamapps\common\Assetto Corsa Evo");
+                            if (IsValidACEvoDirectory(primaryPath))
+                                return primaryPath;
+
+                            // 2. Parse libraryfolders.vdf for secondary libraries
+                            string vdfPath = Path.Combine(steamPath, @"steamapps\libraryfolders.vdf");
+                            if (File.Exists(vdfPath))
+                            {
+                                var paths = ParseLibraryFolders(vdfPath);
+                                foreach (var libPath in paths)
+                                {
+                                    string checkPath = Path.Combine(libPath, @"steamapps\common\Assetto Corsa Evo");
+                                    if (IsValidACEvoDirectory(checkPath))
+                                        return checkPath;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Registry path detection failed: " + ex.Message);
+            }
+
+            return "";
+        }
+
+        public static bool IsValidACEvoDirectory(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !Directory.Exists(path))
+                return false;
+
+            return true;
+        }
+
+        public static string GetDefaultDaemonInstallDirectory(string sim = "ace")
+        {
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return Path.Combine(localAppData, "BrBrDbTelemetry");
+        }
+
+        public static string GetDefaultAceInstallDirectory() => GetDefaultDaemonInstallDirectory("ace");
+        public static string GetDefaultAcrInstallDirectory() => GetDefaultDaemonInstallDirectory("acr");
+        public static string GetDefaultAcInstallDirectory() => GetDefaultDaemonInstallDirectory("ac");
+
+        public static string GetDefaultLeagueForSim(string sim)
+        {
+            switch (sim)
+            {
+                case "acr": return "acr";
+                case "ac": return "ac";
+                case "ace": return "acevo";
+                case "rf2": return "kartsim";
+                default: return "acevo";
+            }
+        }
+
+        public static string GetSimulatorDisplayName(string sim)
+        {
+            switch (sim)
+            {
+                case "acr": return "Assetto Corsa Rally";
+                case "ac": return "Assetto Corsa";
+                case "ace": return "Assetto Corsa Evo";
+                case "rf2": return "rFactor 2";
+                default: return sim;
+            }
+        }
+
+        public static bool GetInstalledDaemonDetails(string sim, string targetDir, out string version, out bool isRunning, out bool isAutostart)
+        {
+            version = "";
+            isRunning = false;
+            isAutostart = false;
+
+            if (string.IsNullOrEmpty(targetDir))
+                targetDir = GetDefaultDaemonInstallDirectory(sim);
+
+            string exePath = Path.Combine(targetDir, "brbrdaemon.exe");
+            if (!File.Exists(exePath))
+                exePath = Path.Combine(targetDir, "BrBrDbTelemetryAce.exe");
+            if (!File.Exists(exePath))
+                return false;
+
+            try
+            {
+                var vi = FileVersionInfo.GetVersionInfo(exePath);
+                version = string.Format("{0}.{1}.{2}", vi.FileMajorPart, vi.FileMinorPart, vi.FileBuildPart);
+            }
+            catch
+            {
+                version = "0.0.0";
+            }
+
+            try
+            {
+                isRunning = IsDaemonRunning();
+            }
+            catch { }
+
+            isAutostart = IsDaemonAutostartEnabled(sim, targetDir);
+            return true;
+        }
+
+        public static bool GetInstalledAceDetails(string targetDir, out string version, out bool isRunning, out bool isAutostart)
+            => GetInstalledDaemonDetails("ace", targetDir, out version, out isRunning, out isAutostart);
+
+        public static void InstallDaemonPlugin(string sim, string targetDir, string apiKey, string defaultTelemetryPath, bool enableAutostart, string installerSourcePath = null)
+        {
+            if (string.IsNullOrEmpty(targetDir))
+                targetDir = GetDefaultDaemonInstallDirectory(sim);
+
+            if (!Directory.Exists(targetDir))
+                Directory.CreateDirectory(targetDir);
+
+            StopDaemon();
+
+            string exePath = Path.Combine(targetDir, "brbrdaemon.exe");
+            try
+            {
+                ExtractEmbeddedResource("brbrdaemon.exe", exePath);
+            }
+            catch
+            {
+                try
+                {
+                    ExtractEmbeddedResource("BrBrDbTelemetryAce.exe", exePath);
+                }
+                catch
+                {
+                    if (!File.Exists(exePath))
+                        File.WriteAllText(exePath, "");
+                }
+            }
+
+            // Remove legacy executable if present
+            string legacyExe = Path.Combine(targetDir, "BrBrDbTelemetryAce.exe");
+            if (File.Exists(legacyExe) && !string.Equals(legacyExe, exePath, StringComparison.OrdinalIgnoreCase))
+            {
+                try { File.Delete(legacyExe); } catch { }
+            }
+
+            // Copy installer binary itself to target directory so daemon can launch it
+            try
+            {
+                string sourceExe = installerSourcePath;
+                if (string.IsNullOrEmpty(sourceExe))
+                {
+                    sourceExe = Environment.ProcessPath;
+                    if (string.IsNullOrEmpty(sourceExe))
+                    {
+                        sourceExe = Process.GetCurrentProcess().MainModule?.FileName;
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(sourceExe) && File.Exists(sourceExe))
+                {
+                    string targetInstallerExe = Path.Combine(targetDir, "BrBrDbTelemetryInstaller.exe");
+                    if (!string.Equals(Path.GetFullPath(sourceExe), Path.GetFullPath(targetInstallerExe), StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.Copy(sourceExe, targetInstallerExe, true);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Failed to copy installer executable to target directory: " + ex.Message);
+            }
+
+            string configPath = Path.Combine(targetDir, "BrBrDbTelemetry.json");
+            PluginConfig config = null;
+            bool isNewConfig = !File.Exists(configPath);
+
+            if (!isNewConfig)
+            {
+                try
+                {
+                    string json = File.ReadAllText(configPath);
+                    config = ConfigHelper.Deserialize(json);
+                }
+                catch
+                {
+                    config = new PluginConfig();
+                    isNewConfig = true;
+                }
+            }
+            else
+            {
+                config = new PluginConfig();
+            }
+
+            config.simulator = "auto";
+            if (!config.simulators.ContainsKey("ace"))
+            {
+                config.simulators["ace"] = new SimulatorSettings { league = "acevo", car_name_regexp = ".*" };
+            }
+            if (!config.simulators.ContainsKey("acr"))
+            {
+                config.simulators["acr"] = new SimulatorSettings { league = "acr", car_name_regexp = ".*" };
+            }
+            if (!config.simulators.ContainsKey("ac"))
+            {
+                config.simulators["ac"] = new SimulatorSettings { league = "ac", car_name_regexp = ".*" };
+            }
+
+            if (isNewConfig || string.IsNullOrEmpty(config.league))
+            {
+                config.car_name_regexp = ".*";
+                config.league = "auto";
+            }
+
+            SinkConfig fileSink = config.sinks.Find(s => s.type == "file") ?? new SinkConfig { type = "file" };
+            if (isNewConfig || !string.IsNullOrEmpty(defaultTelemetryPath))
+                fileSink.path = string.IsNullOrEmpty(defaultTelemetryPath) ? "" : defaultTelemetryPath;
+            if (isNewConfig)
+                fileSink.enabled = true;
+
+            SinkConfig httpSink = config.sinks.Find(s => s.type == "http") ?? new SinkConfig { type = "http" };
+            if (isNewConfig)
+                httpSink.server_address = "https://brbrdb.brbrkitten.com";
+            if (!string.IsNullOrEmpty(apiKey))
+            {
+                httpSink.api_key = apiKey;
+                httpSink.enabled = true;
+            }
+            else if (string.IsNullOrEmpty(httpSink.api_key))
+            {
+                httpSink.api_key = "";
+                if (isNewConfig)
+                    httpSink.enabled = false;
+            }
+
+            config.sinks.Clear();
+            config.sinks.Add(httpSink);
+            config.sinks.Add(fileSink);
+
+            string configJson = ConfigHelper.Serialize(config);
+            File.WriteAllText(configPath, configJson, Encoding.UTF8);
+
+            SetDaemonAutostart(sim, targetDir, enableAutostart);
+            StartDaemon(targetDir);
+        }
+
+        public static void InstallAcePlugin(string targetDir, string apiKey, string defaultTelemetryPath, bool enableAutostart)
+            => InstallDaemonPlugin("ace", targetDir, apiKey, defaultTelemetryPath, enableAutostart);
+
+        public static void UninstallDaemonPlugin(string sim, string targetDir)
+        {
+            if (string.IsNullOrEmpty(targetDir))
+                targetDir = GetDefaultDaemonInstallDirectory(sim);
+
+            StopDaemon();
+            SetDaemonAutostart(sim, targetDir, false);
+
+            string exePath = Path.Combine(targetDir, "brbrdaemon.exe");
+            if (File.Exists(exePath))
+                File.Delete(exePath);
+
+            string legacyExe = Path.Combine(targetDir, "BrBrDbTelemetryAce.exe");
+            if (File.Exists(legacyExe))
+                File.Delete(legacyExe);
+
+            string installerExe = Path.Combine(targetDir, "BrBrDbTelemetryInstaller.exe");
+            if (File.Exists(installerExe))
+            {
+                try { File.Delete(installerExe); } catch { }
+            }
+
+            string configPath = Path.Combine(targetDir, "BrBrDbTelemetry.json");
+            if (File.Exists(configPath))
+                File.Delete(configPath);
+        }
+
+        public static void UninstallAcePlugin(string targetDir) => UninstallDaemonPlugin("ace", targetDir);
+
+        public static void SetDaemonAutostart(string sim, string targetDir, bool enable)
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true))
+                {
+                    if (key != null)
+                    {
+                        if (enable)
+                        {
+                            string exePath = Path.Combine(targetDir, "brbrdaemon.exe");
+                            if (!File.Exists(exePath))
+                                exePath = Path.Combine(targetDir, "BrBrDbTelemetryAce.exe");
+                            key.SetValue("brbrdaemon", "\"" + exePath + "\" --tray");
+                            key.DeleteValue("brbrdaemon_ace", false);
+                            key.DeleteValue("brbrdaemon_acr", false);
+                            key.DeleteValue("brbrdaemon_ac", false);
+                            key.DeleteValue("BrBrDbTelemetryAce", false);
+                        }
+                        else
+                        {
+                            key.DeleteValue("brbrdaemon", false);
+                            key.DeleteValue("brbrdaemon_ace", false);
+                            key.DeleteValue("brbrdaemon_acr", false);
+                            key.DeleteValue("brbrdaemon_ac", false);
+                            key.DeleteValue("BrBrDbTelemetryAce", false);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Failed to set autostart: " + ex.Message);
+            }
+        }
+
+        public static void SetAceAutostart(string targetDir, bool enable) => SetDaemonAutostart("ace", targetDir, enable);
+
+        public static bool IsDaemonAutostartEnabled(string sim, string targetDir)
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", false))
+                {
+                    if (key != null)
+                    {
+                        if (key.GetValue("brbrdaemon") != null)
+                            return true;
+                        if (key.GetValue("brbrdaemon_ace") != null || key.GetValue("brbrdaemon_acr") != null || key.GetValue("brbrdaemon_ac") != null || key.GetValue("BrBrDbTelemetryAce") != null)
+                            return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        public static bool IsAceAutostartEnabled(string targetDir) => IsDaemonAutostartEnabled("ace", targetDir);
+
+        public static bool IsDaemonRunning()
+        {
+            try
+            {
+                return Process.GetProcessesByName("brbrdaemon").Length > 0 ||
+                       Process.GetProcessesByName("BrBrDbTelemetryAce").Length > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static bool IsAceDaemonRunning() => IsDaemonRunning();
+
+        public static void StartDaemon(string targetDir)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(targetDir))
+                    targetDir = GetDefaultAceInstallDirectory();
+
+                string exePath = Path.Combine(targetDir, "brbrdaemon.exe");
+                if (!File.Exists(exePath))
+                    exePath = Path.Combine(targetDir, "BrBrDbTelemetryAce.exe");
+
+                if (File.Exists(exePath) && !IsDaemonRunning())
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = exePath,
+                        Arguments = "--tray",
+                        WorkingDirectory = targetDir,
+                        UseShellExecute = true
+                    };
+                    Process.Start(psi);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Failed to start daemon: " + ex.Message);
+            }
+        }
+
+        public static void StartAceDaemon(string targetDir) => StartDaemon(targetDir);
+
+        public static void StopDaemon()
+        {
+            try
+            {
+                // Signal graceful stop event
+                try
+                {
+                    if (EventWaitHandle.TryOpenExisting(@"Local\brbrdaemon_stop_event", out var stopEvent))
+                    {
+                        using (stopEvent)
+                        {
+                            stopEvent.Set();
+                        }
+                    }
+                }
+                catch { }
+
+                var processes = Process.GetProcessesByName("brbrdaemon")
+                    .Concat(Process.GetProcessesByName("BrBrDbTelemetryAce"));
+                foreach (var p in processes)
+                {
+                    try
+                    {
+                        p.CloseMainWindow();
+                        if (!p.WaitForExit(3000))
+                        {
+                            p.Kill();
+                            p.WaitForExit(1000);
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+
+        public static void StopAceDaemon() => StopDaemon();
+
+        public static void RestartDaemon(string targetDir)
+        {
+            StopDaemon();
+            int retries = 10;
+            while (IsDaemonRunning() && retries > 0)
+            {
+                System.Threading.Thread.Sleep(100);
+                retries--;
+            }
+            StartDaemon(targetDir);
+        }
+
+        public static void RestartAceDaemon(string targetDir) => RestartDaemon(targetDir);
+
+        public static bool RestartDaemonIfRunning(string targetDir)
+        {
+            if (IsDaemonRunning())
+            {
+                RestartDaemon(targetDir);
+                return true;
+            }
+            return false;
+        }
+
+        public static bool RestartAceDaemonIfRunning(string targetDir) => RestartDaemonIfRunning(targetDir);
+
+        public static string GetDaemonLogFilePath(string targetDir)
+        {
+            if (string.IsNullOrEmpty(targetDir))
+                targetDir = GetDefaultAceInstallDirectory();
+            string newLog = Path.Combine(targetDir, "brbrdaemon.log");
+            if (File.Exists(newLog))
+                return newLog;
+            string oldLog = Path.Combine(targetDir, "BrBrDbTelemetryAce.log");
+            if (File.Exists(oldLog))
+                return oldLog;
+            return newLog;
+        }
+
+        public static string GetAceLogFilePath(string targetDir) => GetDaemonLogFilePath(targetDir);
+
+        public static string GetAceSessionsDirectoryPath(string telemetryPath, string targetDir)
+        {
+            if (!string.IsNullOrEmpty(telemetryPath))
+                return telemetryPath;
+            if (string.IsNullOrEmpty(targetDir))
+                targetDir = GetDefaultAceInstallDirectory();
+            return Path.Combine(targetDir, "Telemetry");
         }
 
         // Locates the rFactor 2 directory automatically
@@ -402,15 +938,181 @@ namespace BrBrDbTelemetry
 
         public static bool IsInstalledVersionNewer(string installed, string bundled)
         {
+            return CompareVersions(installed, bundled) > 0;
+        }
+
+        public static string NormalizeVersionString(string rawVersion)
+        {
+            if (string.IsNullOrWhiteSpace(rawVersion))
+                return "0.0.0";
+
+            string cleaned = rawVersion.Trim();
+            if (cleaned.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+                cleaned = cleaned.Substring(1);
+
+            int dashIdx = cleaned.IndexOfAny(new[] { '-', '+' });
+            if (dashIdx >= 0)
+                cleaned = cleaned.Substring(0, dashIdx);
+
+            var parts = cleaned.Split('.');
+            var intParts = new List<int>();
+            foreach (var p in parts)
+            {
+                if (int.TryParse(p, out int val))
+                    intParts.Add(val);
+                else
+                    break;
+            }
+
+            while (intParts.Count < 3)
+                intParts.Add(0);
+
+            if (intParts.Count > 4)
+                intParts = intParts.GetRange(0, 4);
+
+            return string.Join(".", intParts);
+        }
+
+        public static int CompareVersions(string versionA, string versionB)
+        {
+            string normA = NormalizeVersionString(versionA);
+            string normB = NormalizeVersionString(versionB);
+
+            if (Version.TryParse(normA, out Version vA) && Version.TryParse(normB, out Version vB))
+            {
+                return vA.CompareTo(vB);
+            }
+            return 0;
+        }
+
+        public static bool IsRemoteVersionNewer(string remoteVersion, string localVersion)
+        {
+            return CompareVersions(remoteVersion, localVersion) > 0;
+        }
+
+        public class GitHubReleaseInfo
+        {
+            public string TagName { get; set; } = "";
+            public string NormalizedVersion { get; set; } = "";
+            public string Name { get; set; } = "";
+            public string HtmlUrl { get; set; } = "";
+            public string ExeDownloadUrl { get; set; } = "";
+            public DateTime? PublishedAt { get; set; }
+            public bool IsNewer { get; set; }
+            public string ErrorMessage { get; set; }
+
+            public bool Success => string.IsNullOrEmpty(ErrorMessage);
+        }
+
+        private static readonly HttpClient _updateHttpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(8)
+        };
+
+        public static GitHubReleaseInfo ParseGitHubReleaseJson(string json, string currentVersion)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return new GitHubReleaseInfo { ErrorMessage = "Empty response received from GitHub." };
+
             try
             {
-                var inst = new Version(installed);
-                var bund = new Version(bundled);
-                return inst > bund;
+                using (var doc = JsonDocument.Parse(json))
+                {
+                    var root = doc.RootElement;
+                    if (root.TryGetProperty("message", out var msgProp) && !root.TryGetProperty("tag_name", out _))
+                    {
+                        return new GitHubReleaseInfo { ErrorMessage = msgProp.GetString() ?? "Unknown GitHub API message." };
+                    }
+
+                    string tagName = root.TryGetProperty("tag_name", out var tagProp) ? tagProp.GetString() ?? "" : "";
+                    string name = root.TryGetProperty("name", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                    string htmlUrl = root.TryGetProperty("html_url", out var htmlProp) ? htmlProp.GetString() ?? "" : "";
+
+                    DateTime? publishedAt = null;
+                    if (root.TryGetProperty("published_at", out var pubProp) && pubProp.TryGetDateTime(out var dt))
+                    {
+                        publishedAt = dt;
+                    }
+
+                    string exeDownloadUrl = "";
+                    if (root.TryGetProperty("assets", out var assetsProp) && assetsProp.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var asset in assetsProp.EnumerateArray())
+                        {
+                            string assetName = asset.TryGetProperty("name", out var aName) ? aName.GetString() ?? "" : "";
+                            if (assetName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (asset.TryGetProperty("browser_download_url", out var urlProp))
+                                {
+                                    exeDownloadUrl = urlProp.GetString() ?? "";
+                                    if (assetName.Equals("BrBrDbTelemetryInstaller.exe", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        break; // Preferred exact installer asset
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    string normRemote = NormalizeVersionString(tagName);
+                    bool isNewer = !string.IsNullOrEmpty(currentVersion) && IsRemoteVersionNewer(tagName, currentVersion);
+
+                    return new GitHubReleaseInfo
+                    {
+                        TagName = tagName,
+                        NormalizedVersion = normRemote,
+                        Name = name,
+                        HtmlUrl = htmlUrl,
+                        ExeDownloadUrl = exeDownloadUrl,
+                        PublishedAt = publishedAt,
+                        IsNewer = isNewer
+                    };
+                }
             }
-            catch
+            catch (Exception ex)
             {
-                return false;
+                return new GitHubReleaseInfo { ErrorMessage = "Failed to parse release information: " + ex.Message };
+            }
+        }
+
+        public static async Task<GitHubReleaseInfo> CheckForGitHubUpdateAsync(string currentVersion, string repo = "kibergus/race_tools")
+        {
+            try
+            {
+                string url = string.Format("https://api.github.com/repos/{0}/releases/latest", repo);
+                using (var req = new HttpRequestMessage(HttpMethod.Get, url))
+                {
+                    string uaVersion = !string.IsNullOrEmpty(currentVersion) ? currentVersion : "1.0.0";
+                    req.Headers.UserAgent.ParseAdd("BrBrDbTelemetryInstaller/" + uaVersion);
+                    req.Headers.Accept.ParseAdd("application/vnd.github.v3+json");
+
+                    using (var resp = await _updateHttpClient.SendAsync(req).ConfigureAwait(false))
+                    {
+                        if (resp.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                        {
+                            return new GitHubReleaseInfo { ErrorMessage = "GitHub rate limit reached. Please try again later." };
+                        }
+                        if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                        {
+                            return new GitHubReleaseInfo { ErrorMessage = "No releases found on GitHub repository." };
+                        }
+                        if (!resp.IsSuccessStatusCode)
+                        {
+                            return new GitHubReleaseInfo { ErrorMessage = string.Format("GitHub returned HTTP {0}.", (int)resp.StatusCode) };
+                        }
+
+                        string body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        return ParseGitHubReleaseJson(body, currentVersion);
+                    }
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                return new GitHubReleaseInfo { ErrorMessage = "Update check timed out." };
+            }
+            catch (Exception ex)
+            {
+                return new GitHubReleaseInfo { ErrorMessage = "Could not check GitHub: " + ex.Message };
             }
         }
 
