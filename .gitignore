@@ -53,7 +53,10 @@ coverage.xml
 .settings/
 
 # Compiled Binaries & Installers
-rfactor_plugin/install/BrBrDbTelemetryInstaller.exe
+installer/BrBrDbTelemetryInstaller.exe
+installer/bin/
+installer/obj/
+installer/publish/
 
 # OS Specific
 .DS_Store

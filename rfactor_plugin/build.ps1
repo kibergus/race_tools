@@ -54,7 +54,8 @@ Copy-Item "BrBrTelemetry.test.json" -Destination (Join-Path $binReleaseDir "BrBr
 if ($Target -eq "test") {
     Write-Host ""
     Write-Host "Running C# installer unit tests via dotnet..."
-    & dotnet run --project install/BrBrDbTelemetryInstallerTests.csproj
+    $installerTestsProj = Join-Path $PSScriptRoot "..\installer\BrBrDbTelemetryInstallerTests.csproj"
+    & dotnet run --project $installerTestsProj
     $csharpExit = $LASTEXITCODE
     if ($csharpExit -ne 0) {
         Write-Error "C# installer unit tests failed!"
@@ -106,14 +107,15 @@ if ($Target -eq "installer") {
 
     Write-Host ""
     Write-Host "Publishing GUI Installer and Configurator (Self-Contained .NET 8 win-x64)..."
-    $installerProj = "install/BrBrDbTelemetryInstaller.csproj"
-    $publishDir = "install/publish"
+    $installerDir = Join-Path $PSScriptRoot "..\installer"
+    $installerProj = Join-Path $installerDir "BrBrDbTelemetryInstaller.csproj"
+    $publishDir = Join-Path $installerDir "publish"
     & dotnet publish $installerProj -c Release -o $publishDir
     if ($LASTEXITCODE -ne 0) {
         Write-Error "C# Installer publish failed!"
         exit $LASTEXITCODE
     }
-    $installerExe = "install/BrBrDbTelemetryInstaller.exe"
+    $installerExe = Join-Path $installerDir "BrBrDbTelemetryInstaller.exe"
     Copy-Item (Join-Path $publishDir "BrBrDbTelemetryInstaller.exe") -Destination $installerExe -Force
 
     Write-Host ""
@@ -142,13 +144,15 @@ if ($Target -eq "deploy") {
     # 3. Publish C# GUI Installer & Configurator
     Write-Host ""
     Write-Host "Publishing GUI Installer and Configurator (Self-Contained .NET 8 win-x64)..."
-    $installerProj = "install/BrBrDbTelemetryInstaller.csproj"
-    $publishDir = "install/publish"
+    $installerDir = Join-Path $PSScriptRoot "..\installer"
+    $installerProj = Join-Path $installerDir "BrBrDbTelemetryInstaller.csproj"
+    $publishDir = Join-Path $installerDir "publish"
     & dotnet publish $installerProj -c Release -o $publishDir
 
+    $installerExe = Join-Path $installerDir "BrBrDbTelemetryInstaller.exe"
     if ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $publishDir "BrBrDbTelemetryInstaller.exe"))) {
-        Copy-Item (Join-Path $publishDir "BrBrDbTelemetryInstaller.exe") -Destination "install/BrBrDbTelemetryInstaller.exe" -Force
-        Write-Host "SUCCESS: Built GUI Installer at install/BrBrDbTelemetryInstaller.exe"
+        Copy-Item (Join-Path $publishDir "BrBrDbTelemetryInstaller.exe") -Destination $installerExe -Force
+        Write-Host "SUCCESS: Built GUI Installer at $installerExe"
     } else {
         Write-Error "C# Installer compilation failed!"
         exit $LASTEXITCODE

@@ -22,7 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="..\build\bin\Release\BrBrDbTelemetry64.dll" Link="BrBrDbTelemetry64.dll" Condition="Exists('..\build\bin\Release\BrBrDbTelemetry64.dll')" />
+    <EmbeddedResource Include="..\rfactor_plugin\build\bin\Release\BrBrDbTelemetry64.dll" Link="BrBrDbTelemetry64.dll" Condition="Exists('..\rfactor_plugin\build\bin\Release\BrBrDbTelemetry64.dll')" />
   </ItemGroup>
 
 </Project>
