@@ -20,8 +20,8 @@ class TrackOrigin:
     """Geographic origin and alignment corrections for a specific track."""
     lat: float
     lon: float
-    heading: float = 0.0
     correction: Correction = field(default_factory=Correction)
+    heading: float = 0.0
 
     def to_gps(self, x: float, z: float) -> tuple[float, float]:
         """Convert local Cartesian coordinates (x, z in meters) to GPS (latitude, longitude)."""
