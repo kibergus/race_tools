@@ -20,7 +20,12 @@ class TrackOrigin:
     """Geographic origin and alignment corrections for a specific track."""
     lat: float
     lon: float
+    heading: float = 0.0
     correction: Correction = field(default_factory=Correction)
+
+    def to_gps(self, x: float, z: float) -> tuple[float, float]:
+        """Convert local Cartesian coordinates (x, z in meters) to GPS (latitude, longitude)."""
+        return rfactor_to_gps(x, z, self)
 
 
 # Reference constants for rFactor to GPS conversion
@@ -152,8 +157,9 @@ def rfactor_to_gps(x: float, z: float, origin: TrackOrigin) -> tuple[float, floa
     The conversion applies rotation and meter-based shifts defined in origin.correction,
     then uses WGS84 degree lengths for the specific latitude.
     """
-    # 1. Apply Rotation (CCW)
-    angle_deg = origin.correction.angle_deg
+    # 1. Apply Rotation
+    # origin.heading is clockwise from North; angle_deg is counter-clockwise.
+    angle_deg = origin.correction.angle_deg - origin.heading
     if angle_deg != 0:
         angle_rad = math.radians(angle_deg)
         cos_a = math.cos(angle_rad)
