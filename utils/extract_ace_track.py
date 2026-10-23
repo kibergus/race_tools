@@ -8,6 +8,7 @@ compatible with the race_tools data pipeline.
 
 import os
 import sys
+import re
 import json
 import math
 import struct
@@ -16,51 +17,31 @@ from typing import List, Tuple, Dict, Any
 
 # Ensure race_tools is importable
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from race_tools import kml_utils, geojson_utils
+from race_tools import kml_utils, geojson_utils, assetto_corsa
 
 # Constants for kspkg parsing
 XOR_KEY = 0x9F9721A97D1135C1
 KEY_BYTES = struct.pack('<Q', XOR_KEY)
 FILE_TABLE_SIZES = [0x4_000_000, 0x2_000_000]  # 64MB for >=0.7, 32MB for <0.7
 
-# Default known track geographic origins and metadata
+# Default known track metadata
 KNOWN_TRACK_METADATA = {
     'monza': {
         'track_name': 'Monza',
         'timezone': 'Europe/Rome',
-        'aliases': [
-            'Monza',
-            'Autodromo Nazionale Monza',
-            'Monza GP',
-            'monza',
-            'MonzaGP',
-            'Monza GP Time Attack'
-        ],
-        # Coordinates of the in-game Cartesian (0, 0, 0) origin
-        'origin': {
-            'lat': 45.61389,
-            'lon': 9.28624
-        },
+        'aliases': [],
         'sector_splits_ratio': [0.275, 0.671]  # Sector 1 and Sector 2 split ratios
     },
     'imola': {
         'track_name': 'Imola',
         'timezone': 'Europe/Rome',
-        'aliases': ['Imola', 'Autodromo Enzo e Dino Ferrari', 'imola'],
-        'origin': {
-            'lat': 44.3412,
-            'lon': 11.7134
-        },
+        'aliases': [],
         'sector_splits_ratio': [0.333, 0.666]
     },
     'spa': {
         'track_name': 'Spa-Francorchamps',
         'timezone': 'Europe/Brussels',
-        'aliases': ['Spa', 'Circuit de Spa-Francorchamps', 'spa'],
-        'origin': {
-            'lat': 50.4372,
-            'lon': 5.9714
-        },
+        'aliases': [],
         'sector_splits_ratio': [0.333, 0.666]
     }
 }
@@ -167,32 +148,63 @@ class ACEPackageReader:
             return bytes(data)
 
 
-def cartesian_to_gps(x: float, z: float, origin_lat: float, origin_lon: float) -> Tuple[float, float]:
-    """
-    Converts Cartesian meters (+X = East, +Z = North) to WGS84 GPS (lat, lon).
-    In ACE, laser-scanned tracks are natively aligned to True North.
-    """
-    phi = math.radians(origin_lat)
-    m_per_deg_lat = 111132.92 - 559.82 * math.cos(2 * phi) + 1.175 * math.cos(4 * phi)
-    m_per_deg_lon = 111412.84 * math.cos(phi) - 93.5 * math.cos(3 * phi) + 0.118 * math.cos(5 * phi)
 
-    lat = origin_lat + (z / m_per_deg_lat)
-    lon = origin_lon + (x / m_per_deg_lon)
-    return lat, lon
+def resolve_path(path: str) -> str:
+    """
+    Resolves Windows-style drive paths (e.g. C:\\... or C:/...) to Linux mount points
+    when running on Linux/POSIX systems.
+    """
+    if not path:
+        return path
+    if sys.platform != 'win32':
+        m = re.match(r'^([a-zA-Z]):[\\/](.*)', path)
+        if m:
+            drive, rel = m.groups()
+            rel = rel.replace('\\', '/')
+            # Priority 1: /mnt/windows (primary windows partition mount)
+            mnt_windows = os.path.join('/mnt/windows', rel)
+            if os.path.exists(mnt_windows):
+                return mnt_windows
+            # Fallback
+            if drive.upper() == 'C':
+                return mnt_windows
+            return mnt_drive
+    return path
+
+
+def get_default_kspkg_path() -> str:
+    """Returns platform-aware default path to content.kspkg."""
+    win_rel = r"Program Files (x86)\Steam\steamapps\common\Assetto Corsa EVO\content.kspkg"
+    if sys.platform == 'win32':
+        return os.path.join(r"C:\\", win_rel)
+
+    # Under Linux, prioritize /mnt/windows
+    candidates = [
+        os.path.join('/mnt/windows', win_rel.replace('\\', '/')),
+        os.path.join('/mnt/c', win_rel.replace('\\', '/')),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return candidates[0]
 
 
 def extract_track(track_slug: str, kspkg_path: str, output_dir: str):
     """Extracts centerline and boundaries for track_slug from kspkg."""
+    kspkg_path = resolve_path(kspkg_path)
+    output_dir = resolve_path(output_dir)
     reader = ACEPackageReader(kspkg_path)
 
     # Resolve track metadata
     meta = KNOWN_TRACK_METADATA.get(track_slug.lower(), {
         'track_name': track_slug.capitalize(),
         'timezone': 'UTC',
-        'aliases': [track_slug],
-        'origin': {'lat': 0.0, 'lon': 0.0},
+        'aliases': [],
         'sector_splits_ratio': [0.333, 0.666]
     })
+
+    # Resolve track origin and coordinate conversion from assetto_corsa.py
+    origin_obj = assetto_corsa.get_track_origin(track_slug)
 
     # Search for splinedata and controlpoints
     spline_file = f'content\\tracks\\{track_slug}\\containers\\layout_gp.splinedata.json'
@@ -247,8 +259,6 @@ def extract_track(track_slug: str, kspkg_path: str, output_dir: str):
     N = len(nodes)
     center_points_gps = []
     dists = [0.0]
-    origin_lat = meta['origin']['lat']
-    origin_lon = meta['origin']['lon']
 
     for i in range(N):
         p = nodes[i]['transform']['position']
@@ -269,7 +279,7 @@ def extract_track(track_slug: str, kspkg_path: str, output_dir: str):
     center_path_coords = []
     for i in range(N):
         p = nodes[i]['transform']['position']
-        lat, lon = cartesian_to_gps(p['x'], p['z'], origin_lat, origin_lon)
+        lat, lon = origin_obj.to_gps(p['x'], p['z'])
         dist = dists[i]
 
         sector = 0
@@ -316,8 +326,8 @@ def extract_track(track_slug: str, kspkg_path: str, output_dir: str):
         else:
             tx, tz = dx / length, dz / length
 
-        # Left normal in X-Z plane
-        nx, nz = -tz, tx
+        # Left normal in horizontal ground plane (+X = East, -Z = North)
+        nx, nz = tz, -tx
 
         # Find nearest control point width
         best_d2 = float('inf')
@@ -335,8 +345,8 @@ def extract_track(track_slug: str, kspkg_path: str, output_dir: str):
         rx = curr['x'] - nx * best_wr
         rz = curr['z'] - nz * best_wr
 
-        lat_l, lon_l = cartesian_to_gps(lx, lz, origin_lat, origin_lon)
-        lat_r, lon_r = cartesian_to_gps(rx, rz, origin_lat, origin_lon)
+        lat_l, lon_l = origin_obj.to_gps(lx, lz)
+        lat_r, lon_r = origin_obj.to_gps(rx, rz)
 
         left_path_coords.append([lat_l, lon_l, round(curr['y'], 2)])
         right_path_coords.append([lat_r, lon_r, round(curr['y'], 2)])
@@ -352,13 +362,17 @@ def extract_track(track_slug: str, kspkg_path: str, output_dir: str):
     slug = track_slug.lower()
 
     # Track JSON
+    origin_meta = {
+        'lat': origin_obj.lat,
+        'lon': origin_obj.lon,
+    }
     track_json_data = {
         'track_name': meta['track_name'],
         'timezone': meta['timezone'],
         'aliases': meta['aliases'],
         'lap_length': round(lap_length, 4),
         'sector_end': sector_ends,
-        'origin': meta['origin'],
+        'origin': origin_meta,
         'center_line': centerline_dicts,
         'turn_end': [],
         'turns': []
@@ -394,7 +408,7 @@ def extract_track(track_slug: str, kspkg_path: str, output_dir: str):
 
 
 def main():
-    default_kspkg = r"C:\Program Files (x86)\Steam\steamapps\common\Assetto Corsa EVO\content.kspkg"
+    default_kspkg = get_default_kspkg_path()
     default_out = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'tracks'))
 
     parser = argparse.ArgumentParser(description="Assetto Corsa Evo Track Extractor")

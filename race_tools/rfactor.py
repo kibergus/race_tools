@@ -3,25 +3,13 @@ rFactor coordinate conversion utilities.
 Handles the conversion between rFactor's Cartesian (meters) coordinate system and GPS (WGS84).
 """
 import math
-from dataclasses import dataclass, field
-from race_tools import sanitize
+from dataclasses import dataclass
+from race_tools import track_data
 
 
 @dataclass
-class Correction:
-    """Correction factors for track alignment (offsets and rotation)."""
-    north_m: float = 0.0
-    east_m: float = 0.0
-    angle_deg: float = 0.0
-
-
-@dataclass
-class TrackOrigin:
-    """Geographic origin and alignment corrections for a specific track."""
-    lat: float
-    lon: float
-    correction: Correction = field(default_factory=Correction)
-    heading: float = 0.0
+class RFactorTrackOrigin(track_data.TrackOrigin):
+    """rFactor-specific TrackOrigin implementation."""
 
     def to_gps(self, x: float, z: float) -> tuple[float, float]:
         """Convert local Cartesian coordinates (x, z in meters) to GPS (latitude, longitude)."""
@@ -29,91 +17,91 @@ class TrackOrigin:
 
 
 # Reference constants for rFactor to GPS conversion
-TRACK_ORIGINS = {
-    'Bayford Meadows': TrackOrigin(
+TRACK_ORIGINS: dict[str, RFactorTrackOrigin] = {
+    'Bayford Meadows': RFactorTrackOrigin(
         51.34, 0.74,
-        Correction(north_m=912.5, east_m=372, angle_deg=-2)),
-    'Brentwood': TrackOrigin(
+        track_data.Correction(north_m=912.5, east_m=372, angle_deg=-2)),
+    'Brentwood': RFactorTrackOrigin(
         51.597, 0.295,
-        Correction(north_m=-23, east_m=154.5, angle_deg=-2)),
-    'Buckmore Park': TrackOrigin(
+        track_data.Correction(north_m=-23, east_m=154.5, angle_deg=-2)),
+    'Buckmore Park': RFactorTrackOrigin(
         51.343194, 0.501867,
-        Correction(north_m=-70, east_m=-56, angle_deg=-2)),
-    'Clay Pigeon': TrackOrigin(
+        track_data.Correction(north_m=-70, east_m=-56, angle_deg=-2)),
+    'Clay Pigeon': RFactorTrackOrigin(
         50.823878, -2.555044,
-        Correction(north_m=20, east_m=81, angle_deg=0)),
-    'Dunkeswell': TrackOrigin(
+        track_data.Correction(north_m=20, east_m=81, angle_deg=0)),
+    'Dunkeswell': RFactorTrackOrigin(
         50.867316, -3.237089,
-        Correction(north_m=3.5, east_m=-6, angle_deg=1.0)),
-    'Ellough Park': TrackOrigin(
+        track_data.Correction(north_m=3.5, east_m=-6, angle_deg=1.0)),
+    'Ellough Park': RFactorTrackOrigin(
         52.4277, 1.5833,
-        Correction(north_m=692, east_m=1198, angle_deg=-2.5)),
-    'Forest Edge': TrackOrigin(
+        track_data.Correction(north_m=692, east_m=1198, angle_deg=-2.5)),
+    'Forest Edge': RFactorTrackOrigin(
         51.1802778, -1.36166,
-        Correction(north_m=-45.0, east_m=-141.0, angle_deg=0.0)),
-    'Fulbeck': TrackOrigin(
+        track_data.Correction(north_m=-45.0, east_m=-141.0, angle_deg=0.0)),
+    'Fulbeck': RFactorTrackOrigin(
         53.045268, -0.656013,
-        Correction(north_m=-21.0, east_m=-55.0, angle_deg=0.0)),
-    'Glan Y Gors': TrackOrigin(
+        track_data.Correction(north_m=-21.0, east_m=-55.0, angle_deg=0.0)),
+    'Glan Y Gors': RFactorTrackOrigin(
         53.035557, -3.582806,
-        Correction(north_m=-94, east_m=-61, angle_deg=2)),
-    'Hooton Park': TrackOrigin(
+        track_data.Correction(north_m=-94, east_m=-61, angle_deg=2)),
+    'Hooton Park': RFactorTrackOrigin(
         53.31, -2.941,
-        Correction(north_m=5, east_m=-36, angle_deg=0)),
-    'Kimbolton': TrackOrigin(
+        track_data.Correction(north_m=5, east_m=-36, angle_deg=0)),
+    'Kimbolton': RFactorTrackOrigin(
         52.315824875017825, -0.36923284525509625,
-        Correction(north_m=-30, east_m=-68, angle_deg=-1.5)),
-    'Larkhall': TrackOrigin(
+        track_data.Correction(north_m=-30, east_m=-68, angle_deg=-1.5)),
+    'Larkhall': RFactorTrackOrigin(
         55.752193, -3.978246,
-        Correction(north_m=-5, east_m=-16, angle_deg=0)),
-    'Llandow': TrackOrigin(
+        track_data.Correction(north_m=-5, east_m=-16, angle_deg=0)),
+    'Llandow': RFactorTrackOrigin(
         51.434, -3.498,
-        Correction(north_m=-42, east_m=162, angle_deg=-1)),
-    'Lydd': TrackOrigin(
+        track_data.Correction(north_m=-42, east_m=162, angle_deg=-1)),
+    'Lydd': RFactorTrackOrigin(
         50.93515747693628, 0.9073052129051091,
-        Correction(north_m=-98, east_m=-16, angle_deg=0)),
-    'Nutts Corner': TrackOrigin(
+        track_data.Correction(north_m=-98, east_m=-16, angle_deg=0)),
+    'Nutts Corner': RFactorTrackOrigin(
         54.62245248013883, -6.145107376760258,
-        Correction(north_m=-70, east_m=-65, angle_deg=0)),
-    'PFI': TrackOrigin(
+        track_data.Correction(north_m=-70, east_m=-65, angle_deg=0)),
+    'PFI': RFactorTrackOrigin(
         53.038403944190826, -0.6612882809870662,
-        Correction(north_m=-5, east_m=27, angle_deg=-0.5)),
-    'Red Lodge': TrackOrigin(
+        track_data.Correction(north_m=-5, east_m=27, angle_deg=-0.5)),
+    'Red Lodge': RFactorTrackOrigin(
         52.295, 0.478,
-        Correction(north_m=62, east_m=-14, angle_deg=-2.0)),
-    'Rissington': TrackOrigin(
+        track_data.Correction(north_m=62, east_m=-14, angle_deg=-2.0)),
+    'Rissington': RFactorTrackOrigin(
         51.87, -1.69,
-        Correction(north_m=-512, east_m=315, angle_deg=0)),
-    'Rowrah': TrackOrigin(
+        track_data.Correction(north_m=-512, east_m=315, angle_deg=0)),
+    'Rowrah': RFactorTrackOrigin(
         54.551493, -3.438988,
-        Correction(north_m=-71, east_m=-228, angle_deg=0)),
-    'Rye House': TrackOrigin(
+        track_data.Correction(north_m=-71, east_m=-228, angle_deg=0)),
+    'Rye House': RFactorTrackOrigin(
         51.76745791571449, 0.011617482475658511,
-        Correction(north_m=-20, east_m=-26, angle_deg=-1.5)),
-    'Shenington': TrackOrigin(
+        track_data.Correction(north_m=-20, east_m=-26, angle_deg=-1.5)),
+    'Shenington': RFactorTrackOrigin(
         52.08, -1.47,
-        Correction(north_m=165.5, east_m=-419, angle_deg=0.7)),
-    'Teesside': TrackOrigin(
+        track_data.Correction(north_m=165.5, east_m=-419, angle_deg=0.7)),
+    'Teesside': RFactorTrackOrigin(
         54.58, -1.19,
-        Correction(north_m=-257, east_m=40, angle_deg=0)),
-    'Three Sisters': TrackOrigin(
+        track_data.Correction(north_m=-257, east_m=40, angle_deg=0)),
+    'Three Sisters': RFactorTrackOrigin(
         53.50690336837593, -2.632337509845641,
-        Correction(north_m=-43, east_m=-35, angle_deg=0)),
-    'Warden Law': TrackOrigin(
+        track_data.Correction(north_m=-43, east_m=-35, angle_deg=0)),
+    'Warden Law': RFactorTrackOrigin(
         54.84856307661587, -1.423336782654707,
-        Correction(north_m=1, east_m=3, angle_deg=-0.5)),
-    'Whilton Mill': TrackOrigin(
+        track_data.Correction(north_m=1, east_m=3, angle_deg=-0.5)),
+    'Whilton Mill': RFactorTrackOrigin(
         52.28, -1.09,
-        Correction(north_m=-413, east_m=79, angle_deg=-1)),
-    'Willow Springs': TrackOrigin(
+        track_data.Correction(north_m=-413, east_m=79, angle_deg=-1)),
+    'Willow Springs': RFactorTrackOrigin(
         34.87085, -118.26726,
-        Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=18.0, east_m=12.0, angle_deg=0.0)),
 }
 TRACK_ORIGINS['South Wales Karting Centre'] = TRACK_ORIGINS['Llandow']
 TRACK_ORIGINS['Willow Springs reverse'] = TRACK_ORIGINS['Willow Springs']
 
 
-def get_track_origin(track_name: str | None) -> TrackOrigin:
+def get_track_origin(track_name: str | None) -> RFactorTrackOrigin:
     """
     Find track origin by name match.
 
@@ -121,24 +109,15 @@ def get_track_origin(track_name: str | None) -> TrackOrigin:
         track_name: The name of the track to look up.
 
     Returns:
-        TrackOrigin object containing lat/lon and corrections.
+        RFactorTrackOrigin object containing lat/lon and corrections.
 
     Raises:
         ValueError: If track_name is missing or no match is found.
     """
-    if not track_name:
-        raise ValueError('Track name is missing or empty.')
-
-    norm_track_name = sanitize.normalize(track_name)
-    for name, origin in TRACK_ORIGINS.items():
-        norm_name = sanitize.normalize(name)
-        if norm_name and (norm_name in norm_track_name or norm_track_name in norm_name):
-            return origin
-
-    raise ValueError(f"Unknown track: '{track_name}'. Please add its coordinates to TRACK_ORIGINS in rfactor.py")
+    return track_data.find_track_origin(track_name, TRACK_ORIGINS, 'rfactor.py')
 
 
-def rfactor_to_gps(x: float, z: float, origin: TrackOrigin) -> tuple[float, float]:
+def rfactor_to_gps(x: float, z: float, origin: track_data.TrackOrigin) -> tuple[float, float]:
     """
     Convert rFactor Cartesian coordinates (meters) to GPS (Lat/Lon).
 
@@ -176,14 +155,7 @@ def rfactor_to_gps(x: float, z: float, origin: TrackOrigin) -> tuple[float, floa
     z += origin.correction.north_m
 
     # 3. Accurate WGS84 degree lengths at the given latitude
-    # See: https://en.wikipedia.org/wiki/Geographic_coordinate_system#Length_of_a_degree
-    phi = math.radians(origin.lat)
-
-    # Length of a degree of latitude (meters)
-    m_per_deg_lat = 111132.92 - 559.82 * math.cos(2 * phi) + 1.175 * math.cos(4 * phi)
-
-    # Length of a degree of longitude (meters)
-    m_per_deg_lon = 111412.84 * math.cos(phi) - 93.5 * math.cos(3 * phi) + 0.118 * math.cos(5 * phi)
+    m_per_deg_lat, m_per_deg_lon = track_data.wgs84_meters_per_degree(origin.lat)
 
     lat = origin.lat + (z / m_per_deg_lat)
     lon = origin.lon + (x / m_per_deg_lon)

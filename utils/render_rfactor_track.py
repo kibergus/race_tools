@@ -209,7 +209,7 @@ async def render_track_async(track_name: str) -> str:
 
 def main():
     if len(sys.argv) < 2:
-        print('Usage: python3 render_track.py <track_name>')
+        print('Usage: python3 render_rfactor_track.py <track_name>')
         sys.exit(1)
 
     track_input = sys.argv[1]
