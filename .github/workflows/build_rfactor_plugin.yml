@@ -5,12 +5,14 @@ on:
     branches: [ main, master ]
     paths:
       - 'rfactor_plugin/**'
+      - 'installer/**'
     tags:
       - 'v*'
   pull_request:
     branches: [ main, master ]
     paths:
       - 'rfactor_plugin/**'
+      - 'installer/**'
   workflow_dispatch:
 
 jobs:
@@ -41,27 +43,25 @@ jobs:
         ctest --test-dir build -C Release --output-on-failure
 
     - name: Run C# installer unit tests
-      working-directory: rfactor_plugin
-      run: dotnet run --project install/BrBrDbTelemetryInstallerTests.csproj
+      run: dotnet run --project installer/BrBrDbTelemetryInstallerTests.csproj
 
     - name: Publish C# WinForms installer (Self-Contained .NET 8)
-      working-directory: rfactor_plugin
       shell: pwsh
       run: |
-        $dll = "build\bin\Release\BrBrDbTelemetry64.dll"
+        $dll = "rfactor_plugin\build\bin\Release\BrBrDbTelemetry64.dll"
         if (-not (Test-Path $dll)) {
           Write-Error "Plugin DLL not found at $dll"
           exit 1
         }
-        dotnet publish install/BrBrDbTelemetryInstaller.csproj -c Release -o install/publish
+        dotnet publish installer/BrBrDbTelemetryInstaller.csproj -c Release -o installer/publish
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        Copy-Item install\publish\BrBrDbTelemetryInstaller.exe -Destination install\BrBrDbTelemetryInstaller.exe -Force
+        Copy-Item installer\publish\BrBrDbTelemetryInstaller.exe -Destination installer\BrBrDbTelemetryInstaller.exe -Force
 
     - name: Upload installer EXE
       uses: actions/upload-artifact@v7
       with:
         name: BrBrDbTelemetryInstaller-exe
-        path: rfactor_plugin/install/BrBrDbTelemetryInstaller.exe
+        path: installer/BrBrDbTelemetryInstaller.exe
         if-no-files-found: error
 
   release:
