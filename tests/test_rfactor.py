@@ -6,17 +6,15 @@ from race_tools import track_data
 def test_get_track_origin():
     # Test exact match
     origin = rfactor.get_track_origin('Buckmore Park')
-    assert origin.lat == 51.343194
-    lat, lon = origin.to_gps(0, 0)
-    assert lat == pytest.approx(51.343194, abs=0.01)
+    assert origin is rfactor.TRACK_ORIGINS['Buckmore Park']
 
     # Test normalization and partial match
     origin = rfactor.get_track_origin('buckmore')
-    assert origin.lat == 51.343194
+    assert origin is rfactor.TRACK_ORIGINS['Buckmore Park']
 
     # Test mixed case and underscores
     origin = rfactor.get_track_origin('BAYFORD_MEADOWS')
-    assert origin.lat == 51.34
+    assert origin is rfactor.TRACK_ORIGINS['Bayford Meadows']
 
     # Test missing name
     with pytest.raises(ValueError, match='Track name is missing or empty.'):

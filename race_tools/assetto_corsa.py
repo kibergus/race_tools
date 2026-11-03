@@ -28,28 +28,28 @@ TRACK_ORIGINS: dict[str, AssettoCorsaTrackOrigin] = {
         track_data.Correction(north_m=-1256.0, east_m=601.60, angle_deg=-2.30)),
     'brands_hatch': AssettoCorsaTrackOrigin(
         51.356800, 0.263100,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=7.30, east_m=-43.0, angle_deg=2.20)),
     'cota': AssettoCorsaTrackOrigin(
         30.132800, -97.641100,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=24.0, east_m=-753.0, angle_deg=-1.30)),
     'donington': AssettoCorsaTrackOrigin(
         52.830600, -1.375300,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=-12.80, east_m=7.40, angle_deg=-1.80)),
     'fuji': AssettoCorsaTrackOrigin(
         35.371700, 138.926900,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=-356.0, east_m=-110.0, angle_deg=0.0)),
     'kyalami': AssettoCorsaTrackOrigin(
         -25.998900, 28.075800,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=211.0, east_m=-786.0, angle_deg=0.50)),
     'laguna_seca': AssettoCorsaTrackOrigin(
         36.584400, -121.753600,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=-7.0, east_m=28.0, angle_deg=-0.70)),
     'mount_panorama': AssettoCorsaTrackOrigin(
         -33.447500, 149.554400,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=324.0, east_m=251.90, angle_deg=1.40)),
     'nurburgring': AssettoCorsaTrackOrigin(
         50.335600, 6.947500,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=6052.0, east_m=-2670.0, angle_deg=0.0)),
     'oulton_park': AssettoCorsaTrackOrigin(
         53.177200, -2.613600,
         track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),

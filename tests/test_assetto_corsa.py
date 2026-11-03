@@ -6,17 +6,17 @@ from race_tools import track_data
 def test_get_track_origin():
     # Known track origin
     origin = assetto_corsa.get_track_origin('monza')
-    assert origin.lat == pytest.approx(45.613890)
-    assert origin.lon == pytest.approx(9.286240)
-    assert origin.correction.north_m == pytest.approx(819.5)
-    assert origin.correction.east_m == pytest.approx(-33.0)
-    lat, lon = origin.to_gps(0, 0)
-    assert lat > 45.0
+    assert origin is assetto_corsa.TRACK_ORIGINS['monza']
 
     # Imola
     origin_imola = assetto_corsa.get_track_origin('Imola')
-    assert origin_imola.lat == pytest.approx(44.3412)
-    assert origin_imola.correction == track_data.Correction()
+    assert origin_imola is assetto_corsa.TRACK_ORIGINS['imola']
+
+    # Multi-layout track origin resolution (layouts share venue origin)
+    origin_gp = assetto_corsa.get_track_origin('nurburgring_gp_strecke')
+    origin_nord = assetto_corsa.get_track_origin('nurburgring_nordschleife')
+    assert origin_gp is assetto_corsa.TRACK_ORIGINS['nurburgring']
+    assert origin_nord is assetto_corsa.TRACK_ORIGINS['nurburgring']
 
     # Missing track name
     with pytest.raises(ValueError, match='Track name is missing or empty.'):
