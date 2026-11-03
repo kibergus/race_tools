@@ -387,6 +387,12 @@ namespace BrBrDbTelemetry
                 Assert(meta.Track == "Bayford Meadows", "Track name should be parsed correctly");
                 Assert(meta.Date == "2026-07-25", "Date should be parsed correctly");
                 Assert(meta.Time == "14:25:49", "Time should be parsed correctly");
+
+                string csvPath2 = Path.Combine(tempDir, "test_fuji.csv");
+                string content2 = "Track name,fuji\nTrack configuration,gp_circuit\nDate,2026-11-03\nTime,14:25:49\nTime,x,z\n1,2,3\n";
+                File.WriteAllText(csvPath2, content2);
+                var meta2 = InstallManager.GetSessionMetadata(new FileInfo(csvPath2));
+                Assert(meta2.Track == "fuji_gp_circuit", "Track name should include track configuration");
             }
             finally
             {

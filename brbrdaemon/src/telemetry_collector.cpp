@@ -450,10 +450,17 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
   }
   std::string league = config_.GetLeagueForSim(simKey, shmReader_->GetDefaultLeague());
 
+  // Track name with layout configuration if available
+  std::string trackConfig = Trim(statics.trackConfiguration);
+  std::string fullTrackName = trackName;
+  if (!trackConfig.empty() && trackName.find(trackConfig) == std::string::npos) {
+    fullTrackName = trackName.empty() ? trackConfig : (trackName + "_" + trackConfig);
+  }
+
   // Participant tag for file naming
   std::string tag = SanitizeFilename(driverName) + "_" +
                     SanitizeFilename(carName) + "_" +
-                    SanitizeFilename(trackName) + "_" +
+                    SanitizeFilename(fullTrackName) + "_" +
                     SanitizeFilename(sessionType);
 
   // Initialize Sinks
@@ -503,7 +510,7 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
   sprintf_s(timeBuf, "%02d:%02d:%02d", start_tm.tm_hour, start_tm.tm_min, start_tm.tm_sec);
 
   Sink::SessionMetadata sessionMeta;
-  sessionMeta.trackName = trackName.empty() ? "Unknown Track" : trackName;
+  sessionMeta.trackName = fullTrackName.empty() ? "Unknown Track" : fullTrackName;
   sessionMeta.date = dateBuf;
   sessionMeta.time = timeBuf;
   sessionMeta.driverName = driverName.empty() ? "Unknown Driver" : driverName;
@@ -516,11 +523,11 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
   sessionQueue_->Push(Sink::StartSession{sessionStartTime_, tag, sessionMeta});
 
   std::stringstream ss;
-  ss << "Track name," << EscapeCsvMetadata(trackName) << "\n";
+  ss << "Track name," << EscapeCsvMetadata(fullTrackName) << "\n";
   if (!statics.trackConfiguration.empty()) {
     ss << "Track configuration," << EscapeCsvMetadata(statics.trackConfiguration) << "\n";
   }
-  TrackGeoOrigin origin = ResolveTrackOrigin(trackName, statics.latitude, statics.longitude);
+  TrackGeoOrigin origin = ResolveTrackOrigin(fullTrackName, statics.latitude, statics.longitude);
   ss << std::fixed;
   if (origin.latitude != 0.0 || origin.longitude != 0.0) {
     ss << "Track Origin Latitude," << std::setprecision(8) << origin.latitude << "\n";

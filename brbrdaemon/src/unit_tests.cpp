@@ -477,6 +477,80 @@ void TestAcRallyTelemetryCollectorSession() {
   std::filesystem::remove_all(tempLogDir, ec);
 }
 
+void TestTelemetryCollectorTrackConfiguration() {
+  std::wstring physMap = L"Local\\test_tc_trackcfg_phys";
+  std::wstring graphMap = L"Local\\test_tc_trackcfg_graph";
+  std::wstring statMap = L"Local\\test_tc_trackcfg_stat";
+
+  MockSharedMemory mock(physMap, graphMap, statMap);
+  TEST_ASSERT(mock.Initialize(), "MockSharedMemory should initialize");
+
+  std::wstring tempLogDir = std::filesystem::temp_directory_path().wstring() + L"\\trackcfg_test_logs_" +
+                            std::to_wstring(std::chrono::system_clock::now().time_since_epoch().count());
+  std::error_code ec;
+  std::filesystem::create_directories(tempLogDir, ec);
+
+  Logger logger(tempLogDir + L"\\trackcfg_test.log");
+
+  PluginConfig cfg;
+  cfg.simulator = "ace";
+  cfg.pollingRateHz = 100;
+  SinkConfig fSink;
+  fSink.type = "file";
+  fSink.path = std::filesystem::path(tempLogDir).string();
+  fSink.enabled = true;
+  cfg.sinks.push_back(fSink);
+
+  auto reader = std::make_shared<AceSharedMemoryReader>();
+  reader->SetCustomMapNames(physMap, graphMap, statMap, SimulatorType::AceEvo);
+
+  TelemetryCollector collector(reader, cfg, logger, tempLogDir);
+
+  SPageFileStaticEvo stat{};
+  strcpy_s(stat.sm_version, "1.0");
+  strcpy_s(stat.track, "fuji");
+  strcpy_s(stat.track_configuration, "gp_circuit");
+  strcpy_s(stat.session_name, "Practice");
+  strcpy_s(stat.ac_evo_version, "0.1.0");
+  mock.WriteStatic(stat);
+
+  SPageFileGraphicEvo graph{};
+  graph.status = AC_LIVE;
+  strcpy_s(graph.driver_name, "MockDriver");
+  strcpy_s(graph.car_model, "Ferrari 296 GT3");
+  graph.packetId = 1;
+  mock.WriteGraphics(graph);
+
+  SPageFilePhysics phys{};
+  phys.packetId = 1;
+  phys.gear = 2;
+  phys.speedKmh = 100.0f;
+  mock.WritePhysics(phys);
+
+  collector.Start();
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  TEST_ASSERT(collector.IsSessionActive(), "Collector should start session for Fuji");
+
+  collector.Stop();
+  mock.Shutdown();
+
+  bool foundFujiCsv = false;
+  for (const auto& entry : std::filesystem::directory_iterator(tempLogDir)) {
+    if (entry.path().extension() == ".csv") {
+      foundFujiCsv = true;
+      std::ifstream f(entry.path());
+      std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      TEST_ASSERT(content.find("Track name,fuji_gp_circuit") != std::string::npos, "CSV must contain Track name,fuji_gp_circuit");
+      TEST_ASSERT(content.find("Track configuration,gp_circuit") != std::string::npos, "CSV must contain Track configuration,gp_circuit");
+      break;
+    }
+  }
+  TEST_ASSERT(foundFujiCsv, "Collector should have created a CSV file for Fuji");
+
+  std::filesystem::remove_all(tempLogDir, ec);
+}
+
 void TestSafeQueue() {
   auto queue = std::make_shared<SafeQueue<int>>(10);
 
@@ -752,6 +826,7 @@ int main() {
   RUN_TEST(TestSessionStateTransitions);
   RUN_TEST(TestTelemetryCollectorWithMockSim);
   RUN_TEST(TestAcRallyTelemetryCollectorSession);
+  RUN_TEST(TestTelemetryCollectorTrackConfiguration);
 
   std::cout << "==================================================\n";
   std::cout << "Tests run: " << g_testsRun << ", Failed: " << g_testsFailed << "\n";

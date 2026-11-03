@@ -1196,6 +1196,7 @@ namespace BrBrDbTelemetry
                 {
                     string line;
                     int lineCount = 0;
+                    string trackConfig = null;
                     while ((line = reader.ReadLine()) != null && lineCount < 20)
                     {
                         lineCount++;
@@ -1215,6 +1216,10 @@ namespace BrBrDbTelemetry
                             {
                                 meta.Track = val;
                             }
+                            else if (key.Equals("Track configuration", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(val))
+                            {
+                                trackConfig = val;
+                            }
                             else if (key.Equals("Date", StringComparison.OrdinalIgnoreCase))
                             {
                                 meta.Date = val;
@@ -1223,6 +1228,14 @@ namespace BrBrDbTelemetry
                             {
                                 meta.Time = val;
                             }
+                        }
+                    }
+
+                    if (!string.IsNullOrEmpty(trackConfig) && !string.IsNullOrEmpty(meta.Track) && !meta.Track.Equals("Unknown", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!meta.Track.ToLowerInvariant().Contains(trackConfig.ToLowerInvariant()))
+                        {
+                            meta.Track = meta.Track + "_" + trackConfig;
                         }
                     }
                 }

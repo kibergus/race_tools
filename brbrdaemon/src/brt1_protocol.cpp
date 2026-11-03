@@ -17,7 +17,9 @@
 #include "thirdparty/nlohmann/json.hpp"
 #include <cmath>
 #include <cstring>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 
 namespace race_tools {
