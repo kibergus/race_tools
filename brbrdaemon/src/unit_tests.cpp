@@ -551,7 +551,7 @@ void TestSessionStateTransitions() {
 
   TelemetryCollector collector(reader, cfg, logger, tempLogDir);
 
-  // 1. Initial state: simulator off (AC_OFF = 0)
+  // 1. Initial state: simulator off (AC_OFF = 0) with advancing physics packets
   SPageFileStaticEvo stat{};
   strcpy_s(stat.track, "Spa");
   strcpy_s(stat.session_name, "Practice");
@@ -560,6 +560,7 @@ void TestSessionStateTransitions() {
   SPageFileGraphicEvo graph{};
   graph.status = AC_OFF; // 0
   graph.packetId = 1;
+  strcpy_s(graph.car_model, "Ferrari 296 GT3");
   mock.WriteGraphics(graph);
 
   SPageFilePhysics phys{};
@@ -567,46 +568,75 @@ void TestSessionStateTransitions() {
   mock.WritePhysics(phys);
 
   collector.Start();
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  TEST_ASSERT(!collector.IsSessionActive(), "AC_OFF should not start a session");
+
+  // Simulate advancing physics packets in background while AC_OFF (like launcher / main menu)
+  for (int p = 2; p <= 10; ++p) {
+    phys.packetId = p;
+    mock.WritePhysics(phys);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  TEST_ASSERT(!collector.IsSessionActive(), "AC_OFF with advancing packets must not start a session");
 
   // 2. Replay (AC_REPLAY = 1) should NOT start a telemetry session
   graph.status = AC_REPLAY; // 1
-  graph.packetId = 2;
-  phys.packetId = 2;
+  graph.packetId = 11;
+  phys.packetId = 11;
   mock.WriteGraphics(graph);
   mock.WritePhysics(phys);
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   TEST_ASSERT(!collector.IsSessionActive(), "AC_REPLAY should not start a telemetry session");
 
-  // 3. Live driving (AC_LIVE = 2) starts session
+  // 3. AC_LIVE but before track is selected (empty track) should NOT start session
   graph.status = AC_LIVE; // 2
-  graph.packetId = 3;
-  phys.packetId = 3;
+  stat.track[0] = '\0';
+  mock.WriteStatic(stat);
+  graph.packetId = 12;
+  phys.packetId = 12;
   mock.WriteGraphics(graph);
   mock.WritePhysics(phys);
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  TEST_ASSERT(collector.IsSessionActive(), "AC_LIVE should start a telemetry session");
+  TEST_ASSERT(!collector.IsSessionActive(), "AC_LIVE without selected track must not start a session");
+
+  // 4. AC_LIVE but before car is selected (empty car model) should NOT start session
+  strcpy_s(stat.track, "Spa");
+  mock.WriteStatic(stat);
+  graph.car_model[0] = '\0';
+  graph.packetId = 13;
+  phys.packetId = 13;
+  mock.WriteGraphics(graph);
+  mock.WritePhysics(phys);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  TEST_ASSERT(!collector.IsSessionActive(), "AC_LIVE without selected car must not start a session");
+
+  // 5. Live driving (AC_LIVE = 2) with valid track and car starts session
+  strcpy_s(graph.car_model, "Ferrari 296 GT3");
+  graph.status = AC_LIVE; // 2
+  graph.packetId = 14;
+  phys.packetId = 14;
+  mock.WriteGraphics(graph);
+  mock.WritePhysics(phys);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  TEST_ASSERT(collector.IsSessionActive(), "AC_LIVE with track and car should start a telemetry session");
   TEST_ASSERT(collector.GetSessionState() == SessionState::Live, "Session state should be Live");
 
-  // 4. Pausing (AC_PAUSE = 3) transitions to Paused and keeps session active (does NOT close file)
+  // 6. Pausing (AC_PAUSE = 3) transitions to Paused and keeps session active (does NOT close file)
   graph.status = AC_PAUSE; // 3
   mock.WriteGraphics(graph);
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   TEST_ASSERT(collector.IsSessionActive(), "Pausing should keep the session active");
   TEST_ASSERT(collector.GetSessionState() == SessionState::Paused, "Session state should be Paused");
 
-  // 5. Resume from pause (AC_LIVE = 2) transitions back to Live seamlessly
+  // 7. Resume from pause (AC_LIVE = 2) transitions back to Live seamlessly
   graph.status = AC_LIVE; // 2
-  graph.packetId = 4;
-  phys.packetId = 4;
+  graph.packetId = 15;
+  phys.packetId = 15;
   mock.WriteGraphics(graph);
   mock.WritePhysics(phys);
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   TEST_ASSERT(collector.IsSessionActive(), "Session should remain active after resume");
   TEST_ASSERT(collector.GetSessionState() == SessionState::Live, "Session state should return to Live");
 
-  // 6. Leaving session (AC_OFF = 0) cleanly ends the session
+  // 8. Leaving session (AC_OFF = 0) cleanly ends the session
   graph.status = AC_OFF; // 0
   mock.WriteGraphics(graph);
   std::this_thread::sleep_for(std::chrono::milliseconds(50));

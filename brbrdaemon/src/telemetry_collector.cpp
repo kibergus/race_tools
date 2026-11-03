@@ -393,12 +393,15 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
                                       const UnifiedStaticInfo& statics) {
   EndSession();
 
+  std::string trackName = Trim(statics.track);
+  std::string carName = Trim(graphics.carModel);
+  if (trackName.empty() || carName.empty()) {
+    return;
+  }
+
   sessionStartTime_ = std::chrono::system_clock::now();
   sessionStartSteadyTime_ = std::chrono::steady_clock::now();
   sessionQueue_ = std::make_shared<SafeQueue<Sink::Message>>(50000);
-
-  std::string trackName = statics.track;
-  if (trackName.empty()) trackName = "Unknown Track";
 
   std::string driverName = graphics.driverName;
   std::string surname = graphics.driverSurname;
@@ -409,9 +412,6 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
     driverName += surname;
   }
   if (driverName.empty()) driverName = "Unknown Driver";
-
-  std::string carName = graphics.carModel;
-  if (carName.empty()) carName = "Unknown Car";
 
   // Apply driver name overrides if regex matches car name
   for (const auto& override_entry : config_.driverNameOverrides) {
@@ -654,7 +654,8 @@ void TelemetryCollector::PollingThreadWorker() {
 
       // Explicit State Machine:
       // status: AC_OFF=0, AC_REPLAY=1, AC_LIVE=2, AC_PAUSE=3
-      if (graphics.status == 2 /* AC_LIVE */ || (graphics.status == 0 && packetsAdvancing)) {
+      bool hasTrackAndCar = !Trim(statics.track).empty() && !Trim(graphics.carModel).empty();
+      if (graphics.status == 2 /* AC_LIVE */ && hasTrackAndCar) {
         SessionIdentity newId;
         newId.track = statics.track;
         newId.trackConfiguration = statics.trackConfiguration;
@@ -696,7 +697,7 @@ void TelemetryCollector::PollingThreadWorker() {
           sessionState_ = SessionState::Paused;
           logger_.Write("Session paused. Retaining active session.");
         }
-      } else if (graphics.status == 1 /* AC_REPLAY */ || graphics.status == 0 /* AC_OFF */) {
+      } else if (graphics.status == 1 /* AC_REPLAY */ || graphics.status == 0 /* AC_OFF */ || !hasTrackAndCar) {
         if (sessionState_ == SessionState::Live || sessionState_ == SessionState::Paused) {
           logger_.Write(graphics.status == 1 ? "Replay active. Ending session." : "Leaving session.");
           EndSession();

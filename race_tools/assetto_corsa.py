@@ -19,24 +19,58 @@ class AssettoCorsaTrackOrigin(track_data.TrackOrigin):
 TRACK_ORIGINS: dict[str, AssettoCorsaTrackOrigin] = {
     'monza': AssettoCorsaTrackOrigin(
         45.613890, 9.286240,
-        track_data.Correction(north_m=820.0, east_m=-30.0, angle_deg=0.0)),
-    'imola': AssettoCorsaTrackOrigin(44.341200, 11.713400),
-    'spa': AssettoCorsaTrackOrigin(50.437200, 5.971400),
-    'brands_hatch': AssettoCorsaTrackOrigin(51.356800, 0.263100),
-    'cota': AssettoCorsaTrackOrigin(30.132800, -97.641100),
-    'donington': AssettoCorsaTrackOrigin(52.830600, -1.375300),
-    'fuji': AssettoCorsaTrackOrigin(35.371700, 138.926900),
-    'kyalami': AssettoCorsaTrackOrigin(-25.998900, 28.075800),
-    'laguna_seca': AssettoCorsaTrackOrigin(36.584400, -121.753600),
-    'bathurst': AssettoCorsaTrackOrigin(-33.447500, 149.554400),
-    'nurburgring': AssettoCorsaTrackOrigin(50.335600, 6.947500),
-    'oulton_park': AssettoCorsaTrackOrigin(53.177200, -2.613600),
-    'paul_ricard': AssettoCorsaTrackOrigin(43.250600, 5.791700),
-    'red_bull_ring': AssettoCorsaTrackOrigin(47.219700, 14.764700),
-    'road_atlanta': AssettoCorsaTrackOrigin(34.148100, -83.817800),
-    'sebring': AssettoCorsaTrackOrigin(27.454700, -81.348300),
-    'suzuka': AssettoCorsaTrackOrigin(34.843100, 136.541000),
-    'watkins_glen': AssettoCorsaTrackOrigin(42.336900, -76.927200),
+        track_data.Correction(north_m=819.5, east_m=-33.0, angle_deg=-0.21)),
+    'imola': AssettoCorsaTrackOrigin(
+        44.341200, 11.713400,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'spa': AssettoCorsaTrackOrigin(
+        50.437200, 5.971400,
+        track_data.Correction(north_m=-1200, east_m=500.0, angle_deg=-2.0)),
+    'brands_hatch': AssettoCorsaTrackOrigin(
+        51.356800, 0.263100,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'cota': AssettoCorsaTrackOrigin(
+        30.132800, -97.641100,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'donington': AssettoCorsaTrackOrigin(
+        52.830600, -1.375300,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'fuji': AssettoCorsaTrackOrigin(
+        35.371700, 138.926900,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'kyalami': AssettoCorsaTrackOrigin(
+        -25.998900, 28.075800,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'laguna_seca': AssettoCorsaTrackOrigin(
+        36.584400, -121.753600,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'mount_panorama': AssettoCorsaTrackOrigin(
+        -33.447500, 149.554400,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'nurburgring': AssettoCorsaTrackOrigin(
+        50.335600, 6.947500,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'oulton_park': AssettoCorsaTrackOrigin(
+        53.177200, -2.613600,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'paul_ricard': AssettoCorsaTrackOrigin(
+        43.250600, 5.791700,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'red_bull_ring': AssettoCorsaTrackOrigin(
+        47.219700, 14.764700,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'road_atlanta': AssettoCorsaTrackOrigin(
+        34.148100, -83.817800,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'sebring': AssettoCorsaTrackOrigin(
+        27.454700, -81.348300,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'suzuka': AssettoCorsaTrackOrigin(
+        34.843100, 136.541000,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+    'watkins_glen': AssettoCorsaTrackOrigin(
+        42.336900, -76.927200,
+        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
 }
 
 

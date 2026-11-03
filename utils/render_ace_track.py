@@ -3,18 +3,21 @@
 Utility to render Assetto Corsa Evo (ACE) track boundaries on top of Google Maps satellite imagery.
 Uses Playwright to screenshot a Leaflet map with Google Satellite tiles.
 
-Instructions for verifying track alignment:
-1. Identify track alignment issues (offset or rotation) in the rendered JPEG.
-2. Update the track's geographic origin coordinates in KNOWN_TRACK_METADATA within
-   `utils/extract_ace_track.py`.
-3. Run this script: `python3 utils/render_ace_track.py <track_name>`.
+Instructions for verifying and tuning track alignment:
+1. Edit track origin and correction parameters in `TRACK_ORIGINS` within `race_tools/assetto_corsa.py`:
+   - lat, lon: geographic anchor coordinate.
+   - north_m: shift track North (+) or South (-) in meters.
+   - east_m: shift track East (+) or West (-) in meters.
+   - angle_deg: rotate track counterclockwise (+) or clockwise (-) in degrees around the origin.
+2. Run this script:
+   `PROJECT_ROOT=/home/kibergus/automations ./utils/venv/bin/python3 utils/render_ace_track.py <track_name>`
    The script will automatically:
-   - Re-extract the track geometry from content.kspkg if available.
-   - Regenerate the GeoJSON, JSON, and KML files in the track data directory.
-   - Capture a new satellite render to verify the fix.
+   - Re-extract track geometry using the updated `TRACK_ORIGINS` from `race_tools/assetto_corsa.py`.
+   - Regenerate the GeoJSON, JSON, and KML files in the track data directory (and $PROJECT_ROOT if set).
+   - Capture a new high-resolution satellite screenshot to verify alignment.
 
 Example:
-  python3 utils/render_ace_track.py "monza"
+  PROJECT_ROOT=/home/kibergus/automations ./utils/venv/bin/python3 utils/render_ace_track.py monza
 """
 import os
 import sys
@@ -45,7 +48,12 @@ REPO_TRACK_DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '.
 IMAGE_SIZE = 8192
 
 
-def reprocess_ace_track(track_name: str, kspkg_path: str | None = None) -> None:
+def reprocess_ace_track(
+    track_name: str,
+    kspkg_path: str | None = None,
+    include_meshes: bool = False,
+    tarmac_meshes: str | None = None
+) -> None:
     """
     Re-extracts track from content.kspkg if available.
     """
@@ -64,7 +72,13 @@ def reprocess_ace_track(track_name: str, kspkg_path: str | None = None) -> None:
     for out_dir in out_dirs:
         print(f"Re-extracting ACE track '{slug}' to {out_dir}...")
         try:
-            extract_track(slug, resolved_kspkg, out_dir)
+            extract_track(
+                track_slug=slug,
+                kspkg_path=resolved_kspkg,
+                output_dir=out_dir,
+                include_meshes=include_meshes,
+                tarmac_meshes=tarmac_meshes
+            )
         except Exception as e:
             print(f"Warning: extraction failed for '{slug}' into {out_dir}: {e}")
 
@@ -100,7 +114,9 @@ async def render_ace_track_async(
     kspkg_path: str | None = None,
     skip_extract: bool = False,
     output_path: str | None = None,
-    image_size: int = IMAGE_SIZE
+    image_size: int = IMAGE_SIZE,
+    include_meshes: bool = False,
+    tarmac_meshes: str | None = None
 ) -> str:
     """
     Renders ACE track boundaries using Playwright.
@@ -109,7 +125,12 @@ async def render_ace_track_async(
 
     # 1. Re-extract from kspkg if requested
     if not skip_extract:
-        reprocess_ace_track(slug, kspkg_path)
+        reprocess_ace_track(
+            slug,
+            kspkg_path=kspkg_path,
+            include_meshes=include_meshes,
+            tarmac_meshes=tarmac_meshes
+        )
 
     # 2. Locate GeoJSON
     search_dirs = [REPO_TRACK_DATA_DIR]
@@ -150,10 +171,19 @@ async def render_ace_track_async(
 
     # Calculate track bounds and aspect ratio to minimize margins
     all_coords = []
+    has_extra_layers = False
     for feat in geojson_data.get('features', []):
+        props = feat.get('properties', {})
+        ftype = (props.get('type') or '').lower()
+        if ftype in ('whiteline', 'physical_tarmac'):
+            has_extra_layers = True
         geom = feat.get('geometry', {})
-        if geom.get('type') == 'LineString':
+        gtype = geom.get('type')
+        if gtype == 'LineString':
             all_coords.extend(geom.get('coordinates', []))
+        elif gtype == 'Polygon':
+            for ring in geom.get('coordinates', []):
+                all_coords.extend(ring)
 
     if all_coords:
         lats = [c[1] for c in all_coords]
@@ -176,6 +206,14 @@ async def render_ace_track_async(
 
     print(f"Rendering image at {vp_width}x{vp_height} viewport resolution with minimal margins...")
 
+    # Build legend HTML based on present layers
+    legend_extra_html = ""
+    if has_extra_layers:
+        legend_extra_html = '''
+            <div class="legend-item"><span class="legend-swatch" style="background: #ffffff; border: 1px solid #888;"></span> White Lines (whiteline_*.mesh)</div>
+            <div class="legend-item"><span class="legend-swatch" style="background: #00f0ff; height: 10px; border: 1px solid #00c8ff;"></span> Physical Tarmac Meshes</div>
+        '''
+
     # HTML Template for Leaflet
     html_template = '''
     <!DOCTYPE html>
@@ -187,10 +225,52 @@ async def render_ace_track_async(
         <style>
             body, html, #map {{ margin: 0; padding: 0; width: 100%; height: 100%; background: black; }}
             .leaflet-control-attribution {{ display: none !important; }}
+            .legend-box {{
+                position: absolute;
+                top: 25px;
+                right: 25px;
+                z-index: 9999;
+                background: rgba(10, 14, 20, 0.88);
+                color: #ffffff;
+                padding: 18px 24px;
+                border-radius: 10px;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+                font-size: 22px;
+                line-height: 1.6;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.8);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }}
+            .legend-title {{
+                font-weight: 700;
+                font-size: 26px;
+                margin-bottom: 12px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.25);
+                padding-bottom: 6px;
+                letter-spacing: 0.5px;
+            }}
+            .legend-item {{
+                margin-bottom: 6px;
+                display: flex;
+                align-items: center;
+            }}
+            .legend-swatch {{
+                display: inline-block;
+                width: 32px;
+                height: 6px;
+                margin-right: 14px;
+                border-radius: 2px;
+            }}
         </style>
     </head>
     <body>
         <div id="map"></div>
+        <div class="legend-box">
+            <div class="legend-title">ACE Track Layers</div>
+            <div class="legend-item"><span class="legend-swatch" style="background: #ff2200;"></span> Left Boundary (AI Corridor)</div>
+            <div class="legend-item"><span class="legend-swatch" style="background: #ff7700;"></span> Right Boundary (AI Corridor)</div>
+            ''' + legend_extra_html + '''
+            <div class="legend-item"><span class="legend-swatch" style="background: transparent; border-top: 3px dashed #ffffff; height: 0;"></span> Centerline Spline</div>
+        </div>
         <script>
             const geojsonData = {geojson_data};
 
@@ -206,29 +286,44 @@ async def render_ace_track_async(
 
             const trackLayer = L.geoJSON(geojsonData, {{
                 style: function(feature) {{
-                    const name = (feature.properties.name || "").toLowerCase();
+                    const props = feature.properties || {{}};
+                    const type = (props.type || "").toLowerCase();
+                    const name = (props.name || "").toLowerCase();
                     let color = "#0064ff";
-                    let weight = 3;
-                    let opacity = 1;
+                    let weight = 2;
+                    let opacity = 1.0;
+                    let dashArray = null;
 
-                    if (name.includes('left')) color = "#0096ff";
-                    if (name.includes('right')) color = "#00c8ff";
-                    if (name.includes('center')) {{
+                    if (type === 'legal_limit' || type === 'boundary' || name.includes('boundary')) {{
+                        color = (props.side === 'left' || name.includes('left')) ? "#ff2200" : "#ff7700";
+                        weight = 3;
+                        opacity = 1.0;
+                    }} else if (type === 'whiteline' || name.includes('white line')) {{
                         color = "#ffffff";
-                        weight = 1;
+                        weight = 2;
+                        opacity = 1.0;
+                    }} else if (type === 'physical_tarmac' || name.includes('tarmac')) {{
+                        color = "#00f0ff";
+                        weight = 3;
+                        opacity = 1.0;
+                    }} else if (type === 'centerline' || name.includes('center')) {{
+                        color = "#ffffff";
+                        weight = 1.5;
                         opacity = 0.6;
+                        dashArray = "10, 10";
                     }}
 
                     return {{
                         color: color,
                         weight: weight,
                         opacity: opacity,
+                        dashArray: dashArray,
                         fillOpacity: 0
                     }};
                 }}
             }}).addTo(map);
 
-            map.fitBounds(trackLayer.getBounds(), {{ padding: [10, 10] }});
+            map.fitBounds(trackLayer.getBounds(), {{ padding: [12, 12] }});
         </script>
     </body>
     </html>
@@ -266,6 +361,8 @@ def main():
     parser.add_argument("--no-extract", action="store_true", help="Skip re-extracting geometry from kspkg")
     parser.add_argument("--out", default=None, help="Output image file path (defaults to <slug>.jpeg)")
     parser.add_argument("--size", type=int, default=IMAGE_SIZE, help="Image width and height in pixels")
+    parser.add_argument("--include-meshes", action="store_true", help="Include white line and tarmac meshes in GeoJSON")
+    parser.add_argument("--tarmac-meshes", default=None, help="Tarmac meshes to extract (e.g. 1-5, 1,2,3 or all)")
     args = parser.parse_args()
 
     try:
@@ -274,7 +371,9 @@ def main():
             kspkg_path=args.kspkg,
             skip_extract=args.no_extract,
             output_path=args.out,
-            image_size=args.size
+            image_size=args.size,
+            include_meshes=args.include_meshes,
+            tarmac_meshes=args.tarmac_meshes
         ))
     except Exception as e:
         print(f"Error: {e}")

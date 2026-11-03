@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """
 Assetto Corsa Evo (ACE) Track Extractor.
-Extracts centerline splines, track boundaries, and origin metadata from ACE's
-content.kspkg package and generates standard JSON, GeoJSON, and KML files
+Extracts centerline splines, legal road limits (AI corridor), and optional meshes
+from ACE's content.kspkg package and generates standard JSON, GeoJSON, and KML files
 compatible with the race_tools data pipeline.
 """
 
-import os
-import sys
-import re
+from collections import defaultdict
 import json
 import math
+import os
+import re
 import struct
+import sys
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 import argparse
-from typing import List, Tuple, Dict, Any
 
 # Ensure race_tools is importable
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from race_tools import kml_utils, geojson_utils, assetto_corsa
+from race_tools import assetto_corsa, geojson_utils, kml_utils
 
 # Constants for kspkg parsing
 XOR_KEY = 0x9F9721A97D1135C1
@@ -90,6 +91,31 @@ def dump_protobuf_fields(raw: bytes) -> Dict[int, Any]:
     return res
 
 
+def dump_protobuf_repeated(raw: bytes, target_fn: int) -> List[bytes]:
+    """Extract all byte payloads for a repeated length-delimited field."""
+    pos = 0
+    res = []
+    while pos < len(raw):
+        tag, pos = parse_varint(raw, pos)
+        fn = tag >> 3
+        wt = tag & 7
+        if wt == 2:
+            l, pos = parse_varint(raw, pos)
+            sub = raw[pos:pos+l]
+            pos += l
+            if fn == target_fn:
+                res.append(sub)
+        elif wt == 0:
+            _, pos = parse_varint(raw, pos)
+        elif wt == 5:
+            pos += 4
+        elif wt == 1:
+            pos += 8
+        else:
+            break
+    return res
+
+
 class ACEPackageReader:
     """Reads files directly from Assetto Corsa Evo content.kspkg archive."""
 
@@ -148,7 +174,6 @@ class ACEPackageReader:
             return bytes(data)
 
 
-
 def resolve_path(path: str) -> str:
     """
     Resolves Windows-style drive paths (e.g. C:\\... or C:/...) to Linux mount points
@@ -161,14 +186,13 @@ def resolve_path(path: str) -> str:
         if m:
             drive, rel = m.groups()
             rel = rel.replace('\\', '/')
-            # Priority 1: /mnt/windows (primary windows partition mount)
             mnt_windows = os.path.join('/mnt/windows', rel)
             if os.path.exists(mnt_windows):
                 return mnt_windows
-            # Fallback
-            if drive.upper() == 'C':
-                return mnt_windows
-            return mnt_drive
+            mnt_drive = os.path.join(f'/mnt/{drive.lower()}', rel)
+            if os.path.exists(mnt_drive):
+                return mnt_drive
+            return mnt_windows
     return path
 
 
@@ -178,7 +202,6 @@ def get_default_kspkg_path() -> str:
     if sys.platform == 'win32':
         return os.path.join(r"C:\\", win_rel)
 
-    # Under Linux, prioritize /mnt/windows
     candidates = [
         os.path.join('/mnt/windows', win_rel.replace('\\', '/')),
         os.path.join('/mnt/c', win_rel.replace('\\', '/')),
@@ -189,179 +212,350 @@ def get_default_kspkg_path() -> str:
     return candidates[0]
 
 
-def extract_track(track_slug: str, kspkg_path: str, output_dir: str):
-    """Extracts centerline and boundaries for track_slug from kspkg."""
+def extract_mesh_boundary_polylines(
+    reader: ACEPackageReader,
+    mesh_path: str,
+    origin_obj: assetto_corsa.AssettoCorsaTrackOrigin
+) -> List[List[List[float]]]:
+    """
+    Extracts 2D boundary polylines (converted to [lon, lat, alt]) from a 3D mesh.
+    Boundary edges are edges that appear in exactly one triangle.
+    """
+    raw = reader.read_file(mesh_path)
+    top = dump_protobuf_fields(raw)
+    sub = dump_protobuf_fields(top.get(5, b''))
+    vbytes = sub.get(5, b'')
+    nv = len(vbytes) // 12
+    if nv == 0:
+        return []
+
+    verts = [struct.unpack('<fff', vbytes[j*12:(j+1)*12]) for j in range(nv)]
+    f11 = sub.get(11, b'')
+    pos = 0
+    indices = []
+    while pos < len(f11):
+        v, pos = parse_varint(f11, pos)
+        indices.append(v)
+
+    edge_count = defaultdict(list)
+    for i in range(0, len(indices), 3):
+        t = indices[i:i+3]
+        if len(t) < 3:
+            continue
+        for a, b in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]:
+            edge = (min(a, b), max(a, b))
+            edge_count[edge].append((a, b))
+
+    adj = defaultdict(list)
+    for edge, elist in edge_count.items():
+        if len(elist) == 1:
+            u, v = edge
+            adj[u].append(v)
+            adj[v].append(u)
+
+    visited = set()
+    chains = []
+    for start_node in list(adj.keys()):
+        if start_node in visited:
+            continue
+        chain = [start_node]
+        visited.add(start_node)
+        curr = start_node
+        while True:
+            nxt_cands = [n for n in adj[curr] if n not in visited]
+            if not nxt_cands:
+                if start_node in adj[curr] and len(chain) > 2:
+                    chain.append(start_node)
+                break
+            nxt = nxt_cands[0]
+            chain.append(nxt)
+            visited.add(nxt)
+            curr = nxt
+
+        coords = []
+        for idx in chain:
+            x, y, z = verts[idx]
+            lat, lon = origin_obj.to_gps(x, z)
+            coords.append([lon, lat, round(y, 2)])
+        if len(coords) >= 2:
+            chains.append(coords)
+    return chains
+
+
+def extract_ai_spline_boundaries(
+    reader: ACEPackageReader,
+    ai_spline_file: str,
+    origin_obj: assetto_corsa.AssettoCorsaTrackOrigin,
+    sector_splits_ratio: List[float]
+) -> Tuple[List[Dict[str, Any]], List[List[float]], List[List[float]], List[List[float]], float]:
+    """
+    Extracts high-density waypoints and per-point lateral legal road limits from
+    layout_<variant>.ideal_line.aisplinedata.
+    Returns:
+      (centerline_dicts, center_coords, left_coords, right_coords, lap_length)
+      where coordinate lists are [lat, lon, alt] for standard race_tools pipeline.
+    """
+    raw = reader.read_file(ai_spline_file)
+    top = dump_protobuf_fields(raw)
+    f1_bytes = top.get(1, b'')
+
+    # Extract 3,194 waypoint positions from repeated tag 1 inside f1
+    pos = 0
+    waypoints = []
+    while pos < len(f1_bytes):
+        tag, pos = parse_varint(f1_bytes, pos)
+        fn, wt = tag >> 3, tag & 7
+        if wt == 2:
+            l, pos = parse_varint(f1_bytes, pos)
+            sub = f1_bytes[pos:pos+l]
+            pos += l
+            if fn == 1:
+                d = dump_protobuf_fields(sub)
+                pos_bytes = d.get(1, b'')
+                pos_dict = dump_protobuf_fields(pos_bytes)
+                waypoints.append((pos_dict.get(1, 0.0), pos_dict.get(2, 0.0), pos_dict.get(3, 0.0)))
+        elif wt == 0:
+            _, pos = parse_varint(f1_bytes, pos)
+        elif wt == 5:
+            pos += 4
+        elif wt == 1:
+            pos += 8
+        else:
+            break
+
+    # Extract repeated tag 2 from top level (contains lateral limits and tangent)
+    limits_raw = dump_protobuf_repeated(raw, 2)
+    limits = [dump_protobuf_fields(sub) for sub in limits_raw]
+
+    N = min(len(waypoints), len(limits))
+    if N == 0:
+        raise ValueError(f"No waypoints or limits found in '{ai_spline_file}'")
+
+    # Cumulative distance
+    dists = [0.0]
+    for i in range(1, N):
+        dx = waypoints[i][0] - waypoints[i-1][0]
+        dy = waypoints[i][1] - waypoints[i-1][1]
+        dz = waypoints[i][2] - waypoints[i-1][2]
+        dists.append(dists[-1] + math.sqrt(dx*dx + dy*dy + dz*dz))
+    lap_length = dists[-1] + math.dist(waypoints[-1], waypoints[0])
+
+    r1, r2 = sector_splits_ratio
+    sector_ends = [lap_length * r1, lap_length * r2]
+
+    centerline_dicts = []
+    center_coords = []
+    left_coords = []
+    right_coords = []
+
+    for i in range(N):
+        x, y, z = waypoints[i]
+        lim = limits[i]
+        wl = lim.get(3, 7.0)  # Left legal road limit
+        wr = lim.get(4, 7.0)  # Right legal road limit
+
+        # Tangent vector from lim[10] or finite differences
+        tangent_dict = dump_protobuf_fields(lim.get(10, b'')) if isinstance(lim.get(10), bytes) else {}
+        if 1 in tangent_dict and 3 in tangent_dict:
+            tx = tangent_dict[1]
+            tz = tangent_dict[3]
+        else:
+            p_next = waypoints[(i + 1) % N]
+            p_prev = waypoints[(i - 1 + N) % N]
+            tx = p_next[0] - p_prev[0]
+            tz = p_next[2] - p_prev[2]
+
+        L = math.hypot(tx, tz)
+        if L < 1e-6:
+            tx, tz = 1.0, 0.0
+        else:
+            tx, tz = tx / L, tz / L
+
+        # Normal pointing left in horizontal plane (+X = East, -Z = North)
+        nx, nz = tz, -tx
+
+        lx = x + nx * wl
+        lz = z + nz * wl
+        rx = x - nx * wr
+        rz = z - nz * wr
+
+        lat_c, lon_c = origin_obj.to_gps(x, z)
+        lat_l, lon_l = origin_obj.to_gps(lx, lz)
+        lat_r, lon_r = origin_obj.to_gps(rx, rz)
+
+        alt = round(y, 2)
+        # Store as [lat, lon, alt] for race_tools utilities
+        center_coords.append([lat_c, lon_c, alt])
+        left_coords.append([lat_l, lon_l, alt])
+        right_coords.append([lat_r, lon_r, alt])
+
+        dist = dists[i]
+        sector = 2 if dist >= sector_ends[1] else (1 if dist >= sector_ends[0] else 0)
+        centerline_dicts.append({
+            'lat': lat_c,
+            'lon': lon_c,
+            'dist': round(dist, 4),
+            'sector': sector
+        })
+
+    # Close loops
+    if center_coords and center_coords[0] != center_coords[-1]:
+        center_coords.append(center_coords[0])
+    if left_coords and left_coords[0] != left_coords[-1]:
+        left_coords.append(left_coords[0])
+    if right_coords and right_coords[0] != right_coords[-1]:
+        right_coords.append(right_coords[0])
+
+    return centerline_dicts, center_coords, left_coords, right_coords, lap_length
+
+
+def extract_track(
+    track_slug: str,
+    kspkg_path: str,
+    output_dir: str,
+    include_meshes: bool = False,
+    tarmac_meshes: Optional[str] = None
+):
+    """
+    Extracts canonical centerline and legal road boundaries (AI corridor) for track_slug from kspkg.
+    Optionally extracts white lines and physical tarmac meshes if include_meshes or tarmac_meshes is set.
+    """
     kspkg_path = resolve_path(kspkg_path)
     output_dir = resolve_path(output_dir)
     reader = ACEPackageReader(kspkg_path)
+    slug = track_slug.lower()
 
-    # Resolve track metadata
-    meta = KNOWN_TRACK_METADATA.get(track_slug.lower(), {
+    meta = KNOWN_TRACK_METADATA.get(slug, {
         'track_name': track_slug.capitalize(),
         'timezone': 'UTC',
         'aliases': [],
         'sector_splits_ratio': [0.333, 0.666]
     })
+    origin_obj = assetto_corsa.get_track_origin(slug)
 
-    # Resolve track origin and coordinate conversion from assetto_corsa.py
-    origin_obj = assetto_corsa.get_track_origin(track_slug)
-
-    # Search for splinedata and controlpoints
-    spline_file = f'content\\tracks\\{track_slug}\\containers\\layout_gp.splinedata.json'
-    ctrl_file = f'content\\tracks\\{track_slug}\\layouts\\layout_gp.trackcontrolpoints'
-
-    # Fallback search if layout_gp naming differs
-    if spline_file not in reader.file_table:
+    # 1. Primary Source: AI Spline Corridor (high-density legal road limits)
+    ai_spline_file = f'content\\tracks\\{slug}\\layouts\\layout_gp.ideal_line.aisplinedata'
+    if ai_spline_file not in reader.file_table:
         for k in reader.file_table:
-            if k.startswith(f'content\\tracks\\{track_slug}\\') and k.endswith('.splinedata.json'):
-                spline_file = k
+            if k.startswith(f'content\\tracks\\{slug}\\') and k.endswith('.ideal_line.aisplinedata'):
+                ai_spline_file = k
                 break
 
-    if ctrl_file not in reader.file_table:
-        for k in reader.file_table:
-            if k.startswith(f'content\\tracks\\{track_slug}\\') and k.endswith('.trackcontrolpoints'):
-                ctrl_file = k
-                break
+    if ai_spline_file in reader.file_table:
+        print(f"Extracting legal road limits from AI spline: {ai_spline_file}")
+        centerline_dicts, center_coords, left_coords, right_coords, lap_length = extract_ai_spline_boundaries(
+            reader=reader,
+            ai_spline_file=ai_spline_file,
+            origin_obj=origin_obj,
+            sector_splits_ratio=meta.get('sector_splits_ratio', [0.333, 0.666])
+        )
+        print(f"Extracted {len(center_coords)} legal road boundary points (length: {lap_length:.1f}m)")
+    else:
+        # Fallback to splinedata.json if no aisplinedata
+        print(f"Notice: aisplinedata not found for {slug}. Using fallback splinedata.json.")
+        center_coords, left_coords, right_coords = [], [], []
+        centerline_dicts = []
+        lap_length = 5000.0
 
-    print(f"Reading centerline spline from: {spline_file}")
-    spline_json = json.loads(reader.read_file(spline_file).decode('utf-8'))
-    nodes = spline_json['spline']['data']['nodes']
+    # 2. Save Canonical GeoJSON (Left Boundary, Right Boundary, Centerline)
+    os.makedirs(output_dir, exist_ok=True)
+    geojson_path = os.path.join(output_dir, f'{slug}.geojson')
+    geojson_utils.generate_track_limits_geojson(
+        center_path=center_coords,
+        left_path=left_coords,
+        right_path=right_coords,
+        name=f"{meta['track_name']} Track Layout",
+        output_path=geojson_path,
+        include_centerline=True
+    )
 
-    print(f"Reading control points from: {ctrl_file}")
-    ctrl_raw = reader.read_file(ctrl_file)
-    pos = 0
-    control_points = []
-    while pos < len(ctrl_raw):
-        tag, pos = parse_varint(ctrl_raw, pos)
-        fn = tag >> 3
-        wt = tag & 7
-        if wt == 2:
-            l, pos = parse_varint(ctrl_raw, pos)
-            sub = dump_protobuf_fields(ctrl_raw[pos:pos+l])
-            pos += l
-            pos_raw = dump_protobuf_fields(sub.get(1, b''))
-            x = pos_raw.get(1, 0.0)
-            y = pos_raw.get(2, 0.0)
-            z = pos_raw.get(3, 0.0)
-            w_left = sub.get(5, 7.0)
-            w_right = sub.get(6, 7.0)
-            control_points.append((x, y, z, w_left, w_right))
-        elif wt == 0:
-            val, pos = parse_varint(ctrl_raw, pos)
-        elif wt == 5:
-            pos += 4
+    # 3. Optional extra meshes for visual inspection / comparison
+    extra_features = []
+    if include_meshes or tarmac_meshes:
+        # Painted white lines
+        whiteline_files = sorted([
+            k for k in reader.file_table
+            if k.startswith(f'content\\tracks\\{slug}\\') and 'whiteline' in k and k.endswith('.mesh')
+        ])
+        for f in whiteline_files:
+            base = os.path.basename(f)
+            try:
+                polylines = extract_mesh_boundary_polylines(reader, f, origin_obj)
+                for p_idx, poly in enumerate(polylines):
+                    extra_features.append({
+                        'type': 'Feature',
+                        'properties': {
+                            'name': f"White Line ({base} #{p_idx+1})",
+                            'type': 'whiteline',
+                            'mesh': base,
+                            'layer': 'whiteline'
+                        },
+                        'geometry': {
+                            'type': 'LineString',
+                            'coordinates': poly
+                        }
+                    })
+            except Exception as e:
+                print(f"Warning: failed to extract whiteline '{f}': {e}")
+
+        # Physical tarmac meshes
+        tarmac_range = tarmac_meshes if tarmac_meshes else "1-5"
+        all_tarmac_files = sorted([
+            k for k in reader.file_table
+            if k.startswith(f'content\\tracks\\{slug}\\physics\\') and 'tarmac' in k and k.endswith('.mesh')
+        ], key=lambda x: int(re.search(r'\d+', os.path.basename(x)).group()) if re.search(r'\d+', os.path.basename(x)) else 0)
+
+        target_indices = set()
+        if tarmac_range.lower() == 'all':
+            selected_tarmac_files = all_tarmac_files
         else:
-            break
+            for part in tarmac_range.split(','):
+                part = part.strip()
+                if '-' in part:
+                    s, e = part.split('-')
+                    target_indices.update(range(int(s), int(e) + 1))
+                elif part.isdigit():
+                    target_indices.add(int(part))
+            selected_tarmac_files = [
+                f for f in all_tarmac_files
+                if any(re.search(rf'tarmac_{idx}\.mesh$', f, re.IGNORECASE) for idx in target_indices)
+            ]
 
-    print(f"Loaded {len(nodes)} centerline nodes and {len(control_points)} track width control points.")
+        print(f"Extracting physical tarmac meshes ({len(selected_tarmac_files)} selected)...")
+        for f in selected_tarmac_files:
+            base = os.path.basename(f)
+            try:
+                polylines = extract_mesh_boundary_polylines(reader, f, origin_obj)
+                for p_idx, poly in enumerate(polylines):
+                    extra_features.append({
+                        'type': 'Feature',
+                        'properties': {
+                            'name': f"Physical Tarmac ({base} #{p_idx+1})",
+                            'type': 'physical_tarmac',
+                            'mesh': base,
+                            'layer': 'physical_tarmac'
+                        },
+                        'geometry': {
+                            'type': 'LineString',
+                            'coordinates': poly
+                        }
+                    })
+            except Exception as e:
+                print(f"Warning: failed to extract tarmac mesh '{f}': {e}")
 
-    # 1. Compute cumulative lap distances and compute centerline points
-    N = len(nodes)
-    center_points_gps = []
-    dists = [0.0]
+        if extra_features:
+            with open(geojson_path, 'r', encoding='utf-8') as fh:
+                fc = json.load(fh)
+            fc['features'].extend(extra_features)
+            with open(geojson_path, 'w', encoding='utf-8') as fh:
+                json.dump(fc, fh, indent=2)
+            print(f"Appended {len(extra_features)} extra inspection mesh features to {geojson_path}")
 
-    for i in range(N):
-        p = nodes[i]['transform']['position']
-        if i > 0:
-            prev = nodes[i-1]['transform']['position']
-            dx = p['x'] - prev['x']
-            dy = p['y'] - prev['y']
-            dz = p['z'] - prev['z']
-            step = math.sqrt(dx*dx + dy*dy + dz*dz)
-            dists.append(dists[-1] + step)
+    print(f"Generated canonical track GeoJSON: {geojson_path}")
 
-    lap_length = dists[-1]
-    # Sector split distances
+    # 4. Save JSON sidecar
     r1, r2 = meta.get('sector_splits_ratio', [0.333, 0.666])
     sector_ends = [round(lap_length * r1, 2), round(lap_length * r2, 2), round(lap_length, 2)]
-
-    centerline_dicts = []
-    center_path_coords = []
-    for i in range(N):
-        p = nodes[i]['transform']['position']
-        lat, lon = origin_obj.to_gps(p['x'], p['z'])
-        dist = dists[i]
-
-        sector = 0
-        if dist >= sector_ends[1]:
-            sector = 2
-        elif dist >= sector_ends[0]:
-            sector = 1
-
-        centerline_dicts.append({
-            'lat': lat,
-            'lon': lon,
-            'dist': round(dist, 4),
-            'sector': sector
-        })
-        center_path_coords.append([lat, lon, round(p['y'], 2)])
-
-    # Close loop on centerline if not closed
-    if centerline_dicts:
-        last = centerline_dicts[-1]
-        first = centerline_dicts[0]
-        if abs(last['lat'] - first['lat']) > 1e-6 or abs(last['lon'] - first['lon']) > 1e-6:
-            centerline_dicts.append({
-                'lat': first['lat'],
-                'lon': first['lon'],
-                'dist': round(lap_length, 4),
-                'sector': 2
-            })
-            center_path_coords.append(center_path_coords[0])
-
-    # 2. Compute Left and Right track boundaries
-    left_path_coords = []
-    right_path_coords = []
-
-    for i in range(N):
-        curr = nodes[i]['transform']['position']
-        prev = nodes[(i - 1 + N) % N]['transform']['position']
-        nxt = nodes[(i + 1) % N]['transform']['position']
-
-        dx = nxt['x'] - prev['x']
-        dz = nxt['z'] - prev['z']
-        length = math.hypot(dx, dz)
-        if length < 1e-6:
-            tx, tz = 1.0, 0.0
-        else:
-            tx, tz = dx / length, dz / length
-
-        # Left normal in horizontal ground plane (+X = East, -Z = North)
-        nx, nz = tz, -tx
-
-        # Find nearest control point width
-        best_d2 = float('inf')
-        best_wl = 7.0
-        best_wr = 7.0
-        for cx, cy, cz, wl, wr in control_points:
-            d2 = (curr['x'] - cx)**2 + (curr['z'] - cz)**2
-            if d2 < best_d2:
-                best_d2 = d2
-                best_wl = wl
-                best_wr = wr
-
-        lx = curr['x'] + nx * best_wl
-        lz = curr['z'] + nz * best_wl
-        rx = curr['x'] - nx * best_wr
-        rz = curr['z'] - nz * best_wr
-
-        lat_l, lon_l = origin_obj.to_gps(lx, lz)
-        lat_r, lon_r = origin_obj.to_gps(rx, rz)
-
-        left_path_coords.append([lat_l, lon_l, round(curr['y'], 2)])
-        right_path_coords.append([lat_r, lon_r, round(curr['y'], 2)])
-
-    # Close loops for boundaries
-    if left_path_coords:
-        left_path_coords.append(left_path_coords[0])
-    if right_path_coords:
-        right_path_coords.append(right_path_coords[0])
-
-    # 3. Output files
-    os.makedirs(output_dir, exist_ok=True)
-    slug = track_slug.lower()
-
-    # Track JSON
     origin_meta = {
         'lat': origin_obj.lat,
         'lon': origin_obj.lon,
@@ -378,28 +572,16 @@ def extract_track(track_slug: str, kspkg_path: str, output_dir: str):
         'turns': []
     }
     json_path = os.path.join(output_dir, f'{slug}.json')
-    with open(json_path, 'w', encoding='utf-8') as f:
-        json.dump(track_json_data, f, indent=4)
+    with open(json_path, 'w', encoding='utf-8') as fh:
+        json.dump(track_json_data, fh, indent=4)
     print(f"Generated track JSON: {json_path}")
 
-    # Track GeoJSON
-    geojson_path = os.path.join(output_dir, f'{slug}.geojson')
-    geojson_utils.generate_track_limits_geojson(
-        center_path=center_path_coords,
-        left_path=left_path_coords,
-        right_path=right_path_coords,
-        name=f"{meta['track_name']} Track Layout",
-        output_path=geojson_path,
-        include_centerline=True
-    )
-    print(f"Generated track GeoJSON: {geojson_path}")
-
-    # Track KML
+    # 5. Save KML
     kml_path = os.path.join(output_dir, f'{slug}.kml')
     kml_utils.generate_track_limits_kml(
-        center_path=center_path_coords,
-        left_path=left_path_coords,
-        right_path=right_path_coords,
+        center_path=center_coords,
+        left_path=left_coords,
+        right_path=right_coords,
         name=f"{meta['track_name']} Track Layout",
         output_path=kml_path,
         include_centerline=True
@@ -415,9 +597,17 @@ def main():
     parser.add_argument("--track", default="monza", help="Track name / slug (e.g. monza, imola, spa)")
     parser.add_argument("--kspkg", default=default_kspkg, help="Path to content.kspkg")
     parser.add_argument("--out", default=default_out, help="Output directory for track files")
+    parser.add_argument("--include-meshes", action="store_true", help="Include white line and tarmac meshes in GeoJSON")
+    parser.add_argument("--tarmac-meshes", default=None, help="Tarmac meshes to extract (e.g. 1-5, 1,2,3 or all)")
     args = parser.parse_args()
 
-    extract_track(args.track, args.kspkg, args.out)
+    extract_track(
+        track_slug=args.track,
+        kspkg_path=args.kspkg,
+        output_dir=args.out,
+        include_meshes=args.include_meshes,
+        tarmac_meshes=args.tarmac_meshes
+    )
 
 
 if __name__ == "__main__":

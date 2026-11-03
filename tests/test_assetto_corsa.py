@@ -8,8 +8,8 @@ def test_get_track_origin():
     origin = assetto_corsa.get_track_origin('monza')
     assert origin.lat == pytest.approx(45.613890)
     assert origin.lon == pytest.approx(9.286240)
-    assert origin.correction.north_m == pytest.approx(820.0)
-    assert origin.correction.east_m == pytest.approx(-30.0)
+    assert origin.correction.north_m == pytest.approx(819.5)
+    assert origin.correction.east_m == pytest.approx(-33.0)
     lat, lon = origin.to_gps(0, 0)
     assert lat > 45.0
 
