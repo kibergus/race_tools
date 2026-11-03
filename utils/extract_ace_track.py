@@ -30,19 +30,49 @@ KNOWN_TRACK_METADATA = {
     'monza': {
         'track_name': 'Monza',
         'timezone': 'Europe/Rome',
-        'aliases': [],
-        'sector_splits_ratio': [0.275, 0.671]  # Sector 1 and Sector 2 split ratios
+        'aliases': ['Autodromo Nazionale Monza'],
+        'sector_splits_ratio': [0.275, 0.671]
     },
     'imola': {
         'track_name': 'Imola',
         'timezone': 'Europe/Rome',
-        'aliases': [],
+        'aliases': ['Autodromo Internazionale Enzo e Dino Ferrari'],
         'sector_splits_ratio': [0.333, 0.666]
     },
     'spa': {
         'track_name': 'Spa-Francorchamps',
         'timezone': 'Europe/Brussels',
-        'aliases': [],
+        'aliases': ['Circuit de Spa-Francorchamps'],
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'brands_hatch': {
+        'track_name': 'Brands Hatch',
+        'timezone': 'Europe/London',
+        'aliases': ['Brands Hatch Circuit'],
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'cota': {
+        'track_name': 'Circuit of the Americas',
+        'timezone': 'America/Chicago',
+        'aliases': ['COTA', 'Austin'],
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'donington': {
+        'track_name': 'Donington Park',
+        'timezone': 'Europe/London',
+        'aliases': ['Donington'],
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'fuji': {
+        'track_name': 'Fuji Speedway',
+        'timezone': 'Asia/Tokyo',
+        'aliases': ['Fuji'],
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'nurburgring': {
+        'track_name': 'Nürburgring',
+        'timezone': 'Europe/Berlin',
+        'aliases': ['Nurburgring', 'Nuerburgring'],
         'sector_splits_ratio': [0.333, 0.666]
     }
 }
@@ -409,21 +439,89 @@ def extract_ai_spline_boundaries(
     return centerline_dicts, center_coords, left_coords, right_coords, lap_length
 
 
+def find_available_layouts(reader: ACEPackageReader, slug: str) -> List[str]:
+    """Finds all layout variant names available for a given track in the package."""
+    layouts = []
+    prefix1 = f"content\\tracks\\{slug}\\layouts\\"
+    prefix2 = f"content\\tracks\\{slug}\\content\\layouts\\"
+    for k in reader.file_table:
+        if k.endswith(".ideal_line.aisplinedata"):
+            if k.startswith(prefix1) or k.startswith(prefix2):
+                fname = k.replace('\\', '/').split('/')[-1]
+                m = re.match(r"^(?:layout_)?(.+?)\.ideal_line\.aisplinedata$", fname)
+                if m:
+                    layout_name = m.group(1)
+                    if layout_name not in layouts:
+                        layouts.append(layout_name)
+    return sorted(layouts)
+
+
+def find_layout_spline_file(reader: ACEPackageReader, slug: str, layout: Optional[str] = None) -> Optional[str]:
+    """
+    Finds the ideal_line.aisplinedata file for a track and optional layout variant.
+    Prefers high-density content\\tracks\\<slug>\\layouts\\ over content\\layouts\\.
+    """
+    if layout:
+        targets = [
+            f"content\\tracks\\{slug}\\layouts\\layout_{layout}.ideal_line.aisplinedata",
+            f"content\\tracks\\{slug}\\layouts\\{layout}.ideal_line.aisplinedata",
+            f"content\\tracks\\{slug}\\content\\layouts\\layout_{layout}.ideal_line.aisplinedata",
+            f"content\\tracks\\{slug}\\content\\layouts\\{layout}.ideal_line.aisplinedata",
+        ]
+        for t in targets:
+            if t in reader.file_table:
+                return t
+        for k in reader.file_table:
+            if k.startswith(f"content\\tracks\\{slug}\\") and layout in k and k.endswith(".ideal_line.aisplinedata"):
+                return k
+
+    default_candidates = [
+        f"content\\tracks\\{slug}\\layouts\\layout_gp.ideal_line.aisplinedata",
+        f"content\\tracks\\{slug}\\layouts\\layout_gp_strecke.ideal_line.aisplinedata",
+        f"content\\tracks\\{slug}\\layouts\\layout_grand_prix.ideal_line.aisplinedata",
+        f"content\\tracks\\{slug}\\layouts\\layout_{slug}.ideal_line.aisplinedata",
+        f"content\\tracks\\{slug}\\layouts\\track_layout.ideal_line.aisplinedata",
+    ]
+    for c in default_candidates:
+        if c in reader.file_table:
+            return c
+
+    for k in sorted(reader.file_table):
+        if k.startswith(f"content\\tracks\\{slug}\\layouts\\") and k.endswith(".ideal_line.aisplinedata"):
+            return k
+    for k in sorted(reader.file_table):
+        if k.startswith(f"content\\tracks\\{slug}\\") and k.endswith(".ideal_line.aisplinedata"):
+            return k
+    return None
+
+
 def extract_track(
     track_slug: str,
     kspkg_path: str,
     output_dir: str,
     include_meshes: bool = False,
-    tarmac_meshes: Optional[str] = None
+    tarmac_meshes: Optional[str] = None,
+    layout: Optional[str] = None
 ):
     """
     Extracts canonical centerline and legal road boundaries (AI corridor) for track_slug from kspkg.
     Optionally extracts white lines and physical tarmac meshes if include_meshes or tarmac_meshes is set.
+    If layout is provided, extracts that specific layout variant and appends it to output filenames.
     """
     kspkg_path = resolve_path(kspkg_path)
     output_dir = resolve_path(output_dir)
     reader = ACEPackageReader(kspkg_path)
     slug = track_slug.lower()
+
+    # If track_slug itself contains layout (e.g. nurburgring_gp_strecke)
+    if not layout:
+        for known_base in list(KNOWN_TRACK_METADATA.keys()) + list(assetto_corsa.TRACK_ORIGINS.keys()):
+            if slug.startswith(known_base + '_') and slug != known_base:
+                layout = slug[len(known_base) + 1:]
+                slug = known_base
+                break
+
+    file_slug = f"{slug}_{layout}" if layout else slug
 
     meta = KNOWN_TRACK_METADATA.get(slug, {
         'track_name': track_slug.capitalize(),
@@ -434,14 +532,9 @@ def extract_track(
     origin_obj = assetto_corsa.get_track_origin(slug)
 
     # 1. Primary Source: AI Spline Corridor (high-density legal road limits)
-    ai_spline_file = f'content\\tracks\\{slug}\\layouts\\layout_gp.ideal_line.aisplinedata'
-    if ai_spline_file not in reader.file_table:
-        for k in reader.file_table:
-            if k.startswith(f'content\\tracks\\{slug}\\') and k.endswith('.ideal_line.aisplinedata'):
-                ai_spline_file = k
-                break
+    ai_spline_file = find_layout_spline_file(reader, slug, layout)
 
-    if ai_spline_file in reader.file_table:
+    if ai_spline_file and ai_spline_file in reader.file_table:
         print(f"Extracting legal road limits from AI spline: {ai_spline_file}")
         centerline_dicts, center_coords, left_coords, right_coords, lap_length = extract_ai_spline_boundaries(
             reader=reader,
@@ -452,19 +545,21 @@ def extract_track(
         print(f"Extracted {len(center_coords)} legal road boundary points (length: {lap_length:.1f}m)")
     else:
         # Fallback to splinedata.json if no aisplinedata
-        print(f"Notice: aisplinedata not found for {slug}. Using fallback splinedata.json.")
+        print(f"Notice: aisplinedata not found for {slug} (layout: {layout}). Using fallback splinedata.json.")
         center_coords, left_coords, right_coords = [], [], []
         centerline_dicts = []
         lap_length = 5000.0
 
+    track_title = f"{meta['track_name']} {layout.replace('_', ' ').title()}" if layout else meta['track_name']
+
     # 2. Save Canonical GeoJSON (Left Boundary, Right Boundary, Centerline)
     os.makedirs(output_dir, exist_ok=True)
-    geojson_path = os.path.join(output_dir, f'{slug}.geojson')
+    geojson_path = os.path.join(output_dir, f'{file_slug}.geojson')
     geojson_utils.generate_track_limits_geojson(
         center_path=center_coords,
         left_path=left_coords,
         right_path=right_coords,
-        name=f"{meta['track_name']} Track Layout",
+        name=f"{track_title} Track Layout",
         output_path=geojson_path,
         include_centerline=True
     )
@@ -560,10 +655,16 @@ def extract_track(
         'lat': origin_obj.lat,
         'lon': origin_obj.lon,
     }
+    aliases = list(meta.get('aliases', []))
+    if layout:
+        for alias_candidate in [file_slug, f"{meta['track_name']} {layout}", f"{slug} {layout}", layout]:
+            if alias_candidate not in aliases:
+                aliases.append(alias_candidate)
+
     track_json_data = {
-        'track_name': meta['track_name'],
+        'track_name': track_title,
         'timezone': meta['timezone'],
-        'aliases': meta['aliases'],
+        'aliases': aliases,
         'lap_length': round(lap_length, 4),
         'sector_end': sector_ends,
         'origin': origin_meta,
@@ -571,22 +672,34 @@ def extract_track(
         'turn_end': [],
         'turns': []
     }
-    json_path = os.path.join(output_dir, f'{slug}.json')
+    json_path = os.path.join(output_dir, f'{file_slug}.json')
     with open(json_path, 'w', encoding='utf-8') as fh:
         json.dump(track_json_data, fh, indent=4)
     print(f"Generated track JSON: {json_path}")
 
     # 5. Save KML
-    kml_path = os.path.join(output_dir, f'{slug}.kml')
+    kml_path = os.path.join(output_dir, f'{file_slug}.kml')
     kml_utils.generate_track_limits_kml(
         center_path=center_coords,
         left_path=left_coords,
         right_path=right_coords,
-        name=f"{meta['track_name']} Track Layout",
+        name=f"{track_title} Track Layout",
         output_path=kml_path,
         include_centerline=True
     )
     print(f"Generated track KML: {kml_path}")
+
+    # Sync to PROJECT_ROOT karting tracks dir if configured
+    project_root = os.environ.get('PROJECT_ROOT')
+    if project_root:
+        karting_dir = os.path.join(project_root, 'karting', 'data', 'tracks')
+        if os.path.exists(karting_dir) and os.path.realpath(karting_dir) != os.path.realpath(output_dir):
+            import shutil
+            for ext in ('.json', '.geojson', '.kml'):
+                src = os.path.join(output_dir, f'{file_slug}{ext}')
+                if os.path.exists(src):
+                    shutil.copy2(src, os.path.join(karting_dir, f'{file_slug}{ext}'))
+            print(f"Synced {file_slug} to {karting_dir}")
 
 
 def main():
@@ -594,19 +707,54 @@ def main():
     default_out = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'tracks'))
 
     parser = argparse.ArgumentParser(description="Assetto Corsa Evo Track Extractor")
-    parser.add_argument("--track", default="monza", help="Track name / slug (e.g. monza, imola, spa)")
+    parser.add_argument("--track", default="monza", help="Track name / slug (e.g. monza, imola, spa, nurburgring)")
+    parser.add_argument("--layout", default=None, help="Track layout variant (e.g. gp_strecke, sprint, 24h, nordschleife)")
+    parser.add_argument("--all-layouts", action="store_true", help="Extract all available layout variants for the specified track")
+    parser.add_argument("--list-layouts", action="store_true", help="List available layout variants for the track and exit")
     parser.add_argument("--kspkg", default=default_kspkg, help="Path to content.kspkg")
     parser.add_argument("--out", default=default_out, help="Output directory for track files")
     parser.add_argument("--include-meshes", action="store_true", help="Include white line and tarmac meshes in GeoJSON")
     parser.add_argument("--tarmac-meshes", default=None, help="Tarmac meshes to extract (e.g. 1-5, 1,2,3 or all)")
     args = parser.parse_args()
 
+    resolved_kspkg = resolve_path(args.kspkg)
+    if args.list_layouts or args.all_layouts:
+        reader = ACEPackageReader(resolved_kspkg)
+        layouts = find_available_layouts(reader, args.track.lower())
+        if args.list_layouts:
+            print(f"Available layouts for '{args.track}': {layouts}")
+            return
+        if args.all_layouts:
+            if not layouts:
+                print(f"No specific layout variants detected for '{args.track}'. Extracting base track...")
+                extract_track(
+                    track_slug=args.track,
+                    kspkg_path=resolved_kspkg,
+                    output_dir=args.out,
+                    include_meshes=args.include_meshes,
+                    tarmac_meshes=args.tarmac_meshes
+                )
+            else:
+                print(f"Extracting all {len(layouts)} layouts for '{args.track}': {layouts}")
+                for lay in layouts:
+                    print(f"\n--- Extracting layout: {lay} ---")
+                    extract_track(
+                        track_slug=args.track,
+                        kspkg_path=resolved_kspkg,
+                        output_dir=args.out,
+                        include_meshes=args.include_meshes,
+                        tarmac_meshes=args.tarmac_meshes,
+                        layout=lay
+                    )
+            return
+
     extract_track(
         track_slug=args.track,
-        kspkg_path=args.kspkg,
+        kspkg_path=resolved_kspkg,
         output_dir=args.out,
         include_meshes=args.include_meshes,
-        tarmac_meshes=args.tarmac_meshes
+        tarmac_meshes=args.tarmac_meshes,
+        layout=args.layout
     )
 
 

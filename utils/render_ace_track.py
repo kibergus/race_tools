@@ -1240,7 +1240,7 @@ async def render_ace_track_async(
     </html>
     '''
 
-    html_content = html_template.format(geojson_data=json.dumps(geojson_data))
+    html_content = html_template.replace('{geojson_data}', json.dumps(geojson_data))
 
     with tempfile.NamedTemporaryFile('w', suffix='.html', delete=False, encoding='utf-8') as f:
         f.write(html_content)
