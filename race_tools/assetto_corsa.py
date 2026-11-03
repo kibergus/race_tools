@@ -22,10 +22,10 @@ TRACK_ORIGINS: dict[str, AssettoCorsaTrackOrigin] = {
         track_data.Correction(north_m=819.5, east_m=-33.0, angle_deg=-0.21)),
     'imola': AssettoCorsaTrackOrigin(
         44.341200, 11.713400,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=-62.70, east_m=46.20, angle_deg=-1.90)),
     'spa': AssettoCorsaTrackOrigin(
         50.437200, 5.971400,
-        track_data.Correction(north_m=-1200, east_m=500.0, angle_deg=-2.0)),
+        track_data.Correction(north_m=-1256.0, east_m=601.60, angle_deg=-2.30)),
     'brands_hatch': AssettoCorsaTrackOrigin(
         51.356800, 0.263100,
         track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
