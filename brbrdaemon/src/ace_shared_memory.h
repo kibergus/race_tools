@@ -43,6 +43,12 @@ enum class LayoutFormat {
   Classic   // Wide wchar_t strings (AC, ACC, classic ACR)
 };
 
+enum class ShmReadResult {
+  Ok,
+  Torn,
+  NotConnected
+};
+
 // Unified session metadata extracted from either Evo or Classic shared memory
 struct UnifiedStaticInfo {
   std::string track;
@@ -79,12 +85,19 @@ public:
   void Disconnect();
   bool IsConnected() const;
 
-  // Read current snapshots
+  // Read current snapshots (returns true if Ok)
   bool ReadPhysics(SPageFilePhysics& out);
   bool ReadGraphics(SPageFileGraphicEvo& out);
   bool ReadStatic(SPageFileStaticEvo& out);
   bool ReadGraphicsClassic(SPageFileGraphicClassic& out);
   bool ReadStaticClassic(SPageFileStaticClassic& out);
+
+  // Detailed snapshot read methods distinguishing torn reads from disconnection
+  ShmReadResult ReadPhysicsResult(SPageFilePhysics& out);
+  ShmReadResult ReadGraphicsResult(SPageFileGraphicEvo& out);
+  ShmReadResult ReadStaticResult(SPageFileStaticEvo& out);
+  ShmReadResult ReadUnifiedGraphicResult(UnifiedGraphicInfo& out);
+  ShmReadResult ReadUnifiedStaticResult(UnifiedStaticInfo& out);
 
   // Unified snapshot reading (handles Evo and Classic transparently)
   bool ReadUnifiedStatic(UnifiedStaticInfo& out);
@@ -127,6 +140,10 @@ private:
   const void* pPhysicsRaw_ = nullptr;
   const void* pGraphicsRaw_ = nullptr;
   const void* pStaticRaw_ = nullptr;
+
+  size_t physicsSize_ = 0;
+  size_t graphicsSize_ = 0;
+  size_t staticSize_ = 0;
 };
 
 } // namespace race_tools

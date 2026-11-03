@@ -62,6 +62,10 @@ std::wstring GetCurrentModuleDirectory();
 // Retrieve the full path to the configuration JSON file.
 std::wstring GetConfigFilePath();
 
+// Build the default configuration: a single enabled file sink writing to telemetryDir
+// and a disabled HTTP sink pointing at the public BrBrDb server.
+PluginConfig MakeDefaultPluginConfig(const std::wstring& telemetryDir);
+
 // Load the configuration from the specified JSON file path.
 PluginConfig LoadPluginConfig(const std::wstring& path);
 

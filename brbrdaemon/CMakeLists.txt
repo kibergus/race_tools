@@ -68,6 +68,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 add_library(brbrdaemon_core STATIC
     src/ace_shared_memory.cpp
     src/ace_shared_memory.h
+    src/brt1_protocol.cpp
+    src/brt1_protocol.h
     src/telemetry_collector.cpp
     src/telemetry_collector.h
     src/sink.cpp

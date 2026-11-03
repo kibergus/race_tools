@@ -444,13 +444,17 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
           pInfo.mID = info.mID;
           pInfo.vehicleName = info.mVehicleName;
           pInfo.driverName = (metadata_.driverName.empty() ? "Unknown Driver" : metadata_.driverName);
+          pInfo.vehicleClass = (metadata_.vehicleClass.empty() ? "Unknown Class" : metadata_.vehicleClass);
           pInfo.kartNumber = ExtractNumber(info.mVehicleName);
           pInfo.isPlayer = (info.mID == 1 || info.mID == 0);
         }
+        if (pInfo.vehicleClass.empty()) {
+          pInfo.vehicleClass = (metadata_.vehicleClass.empty() ? "Unknown Class" : metadata_.vehicleClass);
+        }
       }
 
-      session->driverName = pInfo.driverName;
-      session->vehicleClass = pInfo.vehicleClass;
+      session->driverName = pInfo.driverName.empty() ? "Unknown Driver" : pInfo.driverName;
+      session->vehicleClass = pInfo.vehicleClass.empty() ? "Unknown Class" : pInfo.vehicleClass;
       session->kartNumber = pInfo.kartNumber;
 
       if (!config_.allParticipantsInRace && pInfo.isPlayer) {
@@ -492,9 +496,6 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
         }
       }
 
-      // Push Start Event
-      session->csvQueue.Push(Sink::StartSession{session->sessionStartTime, session->participantTag});
-
       // Write CSV Metadata Headers
       std::time_t start_time_t = std::chrono::system_clock::to_time_t(session->sessionStartTime);
       struct tm start_tm;
@@ -503,6 +504,19 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
       char timeBuf[32];
       sprintf_s(dateBuf, "%04d-%02d-%02d", start_tm.tm_year + 1900, start_tm.tm_mon + 1, start_tm.tm_mday);
       sprintf_s(timeBuf, "%02d:%02d:%02d", start_tm.tm_hour, start_tm.tm_min, start_tm.tm_sec);
+
+      Sink::SessionMetadata sessionMeta;
+      sessionMeta.trackName = session->trackName;
+      sessionMeta.date = dateBuf;
+      sessionMeta.time = timeBuf;
+      sessionMeta.driverName = session->driverName.empty() ? "Unknown Driver" : session->driverName;
+      sessionMeta.league = config_.league;
+      sessionMeta.className = session->vehicleClass.empty() ? "Unknown Class" : session->vehicleClass;
+      sessionMeta.sessionName = session->sessionType;
+      sessionMeta.kartNumber = session->kartNumber;
+
+      // Push Start Event
+      session->csvQueue.Push(Sink::StartSession{session->sessionStartTime, session->participantTag, sessionMeta});
 
       std::stringstream ss;
       ss << "Track name," << session->trackName << "\n";
@@ -535,8 +549,10 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
       }
     }
 
-    std::string line = FormatTelemetryLine(info, session->sessionStartTime, session->startElapsedTime, flag);
-    session->csvQueue.Push(Sink::Line{line, /*isHeader=*/false});
+    std::vector<double> values;
+    std::string line;
+    ExtractTelemetryData(info, session->sessionStartTime, session->startElapsedTime, flag, values, line);
+    session->csvQueue.Push(Sink::Line{line, /*isHeader=*/false, std::move(values)});
   }
 
   for (auto& [id, session] : participantSessions_) {
@@ -548,12 +564,14 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
   logger_.Write("All telemetry sessions ended via shutdown.");
 }
 
-std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(
+void BrBrDbTelemetryPlugin::ExtractTelemetryData(
     const TelemInfoV01& info,
     const std::chrono::system_clock::time_point& sessionStartRealTime,
     double startElapsedTime,
-    unsigned char flag) {
-  // 1. Time (ISO-8601 UTC)
+    unsigned char flag,
+    std::vector<double>& outValues,
+    std::string& outCsvLine) {
+  // 1. Time (ISO-8601 UTC and seconds since Unix epoch)
   double elapsedDiff = info.mElapsedTime - startElapsedTime;
   if (elapsedDiff < 0.0)
     elapsedDiff = 0.0;
@@ -568,6 +586,8 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(
   char timeStr[64];
   sprintf_s(timeStr, "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", gm_tm.tm_year + 1900, gm_tm.tm_mon + 1, gm_tm.tm_mday,
             gm_tm.tm_hour, gm_tm.tm_min, gm_tm.tm_sec, static_cast<int>(millis));
+
+  double timeSeconds = std::chrono::duration<double>(duration).count();
 
   // 2. Speed (magnitude of local velocity vector)
   double speed = sqrt(info.mLocalVel.x * info.mLocalVel.x + info.mLocalVel.y * info.mLocalVel.y +
@@ -600,6 +620,86 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(
   double qx = 0.0, qy = 0.0, qz = 0.0, qw = 1.0;
   race_tools::MatrixToQuaternion(info.mOri, qx, qy, qz, qw);
 
+  const double two_pi = 2.0 * 3.14159265358979323846;
+  double rpsFL = info.mWheel[0].mRotation / two_pi;
+  double rpsFR = info.mWheel[1].mRotation / two_pi;
+  double rpsRL = info.mWheel[2].mRotation / two_pi;
+  double rpsRR = info.mWheel[3].mRotation / two_pi;
+
+  double slidePctFL = info.mWheel[0].mGripFract * 100.0;
+  double slidePctFR = info.mWheel[1].mGripFract * 100.0;
+  double slidePctRL = info.mWheel[2].mGripFract * 100.0;
+  double slidePctRR = info.mWheel[3].mGripFract * 100.0;
+
+  double trackTemp = cachedTrackTemp_.load();
+  double ambientTemp = cachedAmbientTemp_.load();
+  double raining = cachedRaining_.load();
+  double avgWetness = cachedAvgWetness_.load();
+
+  outValues = {
+    timeSeconds,
+    info.mPos.x,
+    info.mPos.z,
+    speed,
+    gForceLat,
+    gForceLon,
+    gForceVert,
+    throttle,
+    brake,
+    steering,
+    clutch,
+    static_cast<double>(gear),
+    info.mWheel[0].mToe,
+    info.mWheel[1].mToe,
+    info.mWheel[2].mToe,
+    info.mWheel[3].mToe,
+    qx,
+    qy,
+    qz,
+    qw,
+    rpsFL,
+    rpsFR,
+    rpsRL,
+    rpsRR,
+    info.mWheel[0].mLateralPatchVel,
+    info.mWheel[1].mLateralPatchVel,
+    info.mWheel[2].mLateralPatchVel,
+    info.mWheel[3].mLateralPatchVel,
+    info.mWheel[0].mLongitudinalPatchVel,
+    info.mWheel[1].mLongitudinalPatchVel,
+    info.mWheel[2].mLongitudinalPatchVel,
+    info.mWheel[3].mLongitudinalPatchVel,
+    info.mWheel[0].mTireLoad,
+    info.mWheel[1].mTireLoad,
+    info.mWheel[2].mTireLoad,
+    info.mWheel[3].mTireLoad,
+    info.mWheel[0].mLateralForce,
+    info.mWheel[1].mLateralForce,
+    info.mWheel[2].mLateralForce,
+    info.mWheel[3].mLateralForce,
+    info.mWheel[0].mLongitudinalForce,
+    info.mWheel[1].mLongitudinalForce,
+    info.mWheel[2].mLongitudinalForce,
+    info.mWheel[3].mLongitudinalForce,
+    slidePctFL,
+    slidePctFR,
+    slidePctRL,
+    slidePctRR,
+    static_cast<double>(flag),
+    trackTemp,
+    ambientTemp,
+    raining,
+    avgWetness,
+    info.mWheel[0].mTemperature[1],
+    info.mWheel[1].mTemperature[1],
+    info.mWheel[2].mTemperature[1],
+    info.mWheel[3].mTemperature[1],
+    info.mWheel[0].mTireCarcassTemperature,
+    info.mWheel[1].mTireCarcassTemperature,
+    info.mWheel[2].mTireCarcassTemperature,
+    info.mWheel[3].mTireCarcassTemperature
+  };
+
   std::stringstream ss;
   ss << std::fixed << std::setprecision(5) << timeStr << "," << info.mPos.x << "," << info.mPos.z << "," << speed
      << "," << gForceLat << "," << gForceLon << "," << gForceVert << "," << throttle << "," << brake << "," << steering
@@ -613,9 +713,7 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(
   ss << qx << "," << qy << "," << qz << "," << qw << ",";
 
   // Wheels RPS FL, FR, RL, RR
-  const double two_pi = 2.0 * 3.14159265358979323846;
-  ss << (info.mWheel[0].mRotation / two_pi) << "," << (info.mWheel[1].mRotation / two_pi) << ","
-     << (info.mWheel[2].mRotation / two_pi) << "," << (info.mWheel[3].mRotation / two_pi) << ",";
+  ss << rpsFL << "," << rpsFR << "," << rpsRL << "," << rpsRR << ",";
 
   // Wheels Lat Patch Vel FL, FR, RL, RR
   ss << info.mWheel[0].mLateralPatchVel << "," << info.mWheel[1].mLateralPatchVel << ","
@@ -638,15 +736,14 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(
      << info.mWheel[2].mLongitudinalForce << "," << info.mWheel[3].mLongitudinalForce << ",";
 
   // Wheels Slide Pct FL, Slide Pct FR, Slide Pct RL, Slide Pct RR (mGripFract * 100)
-  ss << (info.mWheel[0].mGripFract * 100.0) << "," << (info.mWheel[1].mGripFract * 100.0) << ","
-     << (info.mWheel[2].mGripFract * 100.0) << "," << (info.mWheel[3].mGripFract * 100.0) << ","
+  ss << slidePctFL << "," << slidePctFR << "," << slidePctRL << "," << slidePctRR << ","
      << static_cast<int>(flag) << ",";
 
   // Track conditions (sourced from ScoringInfoV01 via cached atomics)
-  ss << cachedTrackTemp_.load() << ","
-     << cachedAmbientTemp_.load() << ","
-     << cachedRaining_.load() << ","
-     << cachedAvgWetness_.load() << ",";
+  ss << trackTemp << ","
+     << ambientTemp << ","
+     << raining << ","
+     << avgWetness << ",";
 
   // Tyre temperatures (Kelvin): centre surface + carcass per wheel
   ss << info.mWheel[0].mTemperature[1] << ","
@@ -658,7 +755,18 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(
      << info.mWheel[2].mTireCarcassTemperature << ","
      << info.mWheel[3].mTireCarcassTemperature << "\n";
 
-  return ss.str();
+  outCsvLine = ss.str();
+}
+
+std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(
+    const TelemInfoV01& info,
+    const std::chrono::system_clock::time_point& sessionStartRealTime,
+    double startElapsedTime,
+    unsigned char flag) {
+  std::vector<double> values;
+  std::string csvLine;
+  ExtractTelemetryData(info, sessionStartRealTime, startElapsedTime, flag, values, csvLine);
+  return csvLine;
 }
 
 } // namespace race_tools

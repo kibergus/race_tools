@@ -666,7 +666,149 @@ void TestSinkWorkerGracefulDrain() {
   std::cout << "TestSinkWorkerGracefulDrain passed!" << std::endl;
 }
 
+void TestBrt1FramingAndMagic() {
+  Brt1StreamEncoder encoder;
+  std::string magic = encoder.EncodeMagicChunk();
+  assert(magic.size() == 7);
+  // [0x04, 0x00, 0x01, 'B', 'R', 'T', '1']
+  assert(static_cast<uint8_t>(magic[0]) == 0x04);
+  assert(static_cast<uint8_t>(magic[1]) == 0x00);
+  assert(static_cast<uint8_t>(magic[2]) == 0x01);
+  assert(magic.substr(3, 4) == "BRT1");
+
+  std::string eos = encoder.EncodeEOSChunk();
+  assert(eos.size() == 3);
+  assert(static_cast<uint8_t>(eos[0]) == 0x00);
+  assert(static_cast<uint8_t>(eos[1]) == 0x00);
+  assert(static_cast<uint8_t>(eos[2]) == 0xFF);
+
+  std::cout << "TestBrt1FramingAndMagic passed!" << std::endl;
+}
+
+void TestBrt1StreamRoundTrip() {
+  Brt1SessionMetadata meta;
+  meta.trackName = "Rowrah";
+  meta.date = "2026-05-10";
+  meta.time = "14:30:00";
+  meta.driverName = "Driver A";
+  meta.league = "kartsim";
+  meta.className = "cadet";
+  meta.sessionName = "Practice";
+  meta.kartNumber = "12";
+
+  Brt1StreamEncoder encoder;
+  Brt1StreamDecoder decoder;
+
+  // 1. Send Magic
+  std::string magic = encoder.EncodeMagicChunk();
+  decoder.Feed(magic);
+  std::unordered_map<std::string, double> record;
+  std::string err;
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::MagicReceived);
+
+  // 2. Send Metadata
+  std::string metaChunk = encoder.EncodeMetadataChunk(meta);
+  decoder.Feed(metaChunk);
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::MetadataReceived);
+  assert(decoder.GetMetadata().trackName == "Rowrah");
+  assert(decoder.GetMetadata().driverName == "Driver A");
+  assert(decoder.GetChannels().size() == 61);
+
+  // 3. Send First Sample (Must be Baseline 0x03)
+  std::vector<double> s1(61, 0.0);
+  s1[0] = 1778423400.0; // Time
+  s1[1] = 10.5;         // x
+  s1[2] = 20.3;         // z
+  s1[3] = 25.0;         // Speed
+  s1[7] = 85.0;         // Throttle
+  s1[8] = 0.0;          // Brake
+
+  std::string c1 = encoder.EncodeSample(s1);
+  assert(static_cast<uint8_t>(c1[2]) == static_cast<uint8_t>(Brt1ChunkType::Baseline));
+  decoder.Feed(c1);
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::BaselineReceived);
+  assert(IsClose(record["Time"], 1778423400.0, 1e-3));
+  assert(IsClose(record["x"], 10.5, 1e-3));
+  assert(IsClose(record["Speed"], 25.0, 1e-2));
+
+  // 4. Send Second Sample (Small delta -> Delta 0x04)
+  std::vector<double> s2 = s1;
+  s2[0] += 0.010; // +10ms
+  s2[1] += 0.25;  // +0.25m
+  s2[3] += 0.5;   // +0.5 m/s
+
+  std::string c2 = encoder.EncodeSample(s2);
+  assert(static_cast<uint8_t>(c2[2]) == static_cast<uint8_t>(Brt1ChunkType::Delta));
+  decoder.Feed(c2);
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::SampleDecoded);
+  assert(IsClose(record["Time"], 1778423400.010, 1e-3));
+  assert(IsClose(record["x"], 10.75, 1e-3));
+  assert(IsClose(record["Speed"], 25.5, 1e-2));
+
+  // 5. Send EOS
+  std::string eos = encoder.EncodeEOSChunk();
+  decoder.Feed(eos);
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::EndOfStream);
+
+  std::cout << "TestBrt1StreamRoundTrip passed!" << std::endl;
+}
+
+void TestBrt1NaNAndKeyframeHandling() {
+  Brt1StreamEncoder encoder(GetDefaultBrt1Channels(), /*maxSamplesBetweenKeyframes=*/10);
+  Brt1StreamDecoder decoder;
+
+  decoder.Feed(encoder.EncodeMagicChunk());
+  std::unordered_map<std::string, double> record;
+  std::string err;
+  decoder.Step(record, err);
+
+  Brt1SessionMetadata meta;
+  meta.trackName = "Test";
+  decoder.Feed(encoder.EncodeMetadataChunk(meta));
+  decoder.Step(record, err);
+
+  std::vector<double> s(61, 10.0);
+  s[7] = std::numeric_limits<double>::quiet_NaN(); // Throttle is NaN
+
+  std::string c1 = encoder.EncodeSample(s);
+  assert(static_cast<uint8_t>(c1[2]) == static_cast<uint8_t>(Brt1ChunkType::Baseline));
+  decoder.Feed(c1);
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::BaselineReceived);
+  assert(std::isnan(record["Throttle"]));
+
+  // Next sample: Throttle stays NaN -> should emit Delta with 0x8000
+  s[0] += 0.01;
+  std::string c2 = encoder.EncodeSample(s);
+  assert(static_cast<uint8_t>(c2[2]) == static_cast<uint8_t>(Brt1ChunkType::Delta));
+  decoder.Feed(c2);
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::SampleDecoded);
+  assert(std::isnan(record["Throttle"]));
+
+  // Next sample: Throttle transitions from NaN to 50.0 -> MUST emit Baseline (Keyframe)!
+  s[0] += 0.01;
+  s[7] = 50.0;
+  std::string c3 = encoder.EncodeSample(s);
+  assert(static_cast<uint8_t>(c3[2]) == static_cast<uint8_t>(Brt1ChunkType::Baseline));
+  decoder.Feed(c3);
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::BaselineReceived);
+  assert(IsClose(record["Throttle"], 50.0, 1e-1));
+
+  // Next: Test overflow delta (> 32767 * scale)
+  // Steering Angle has scale 0.05. Max delta is 32767 * 0.05 = 1638 deg.
+  // Jump steering by 2000 deg -> forces keyframe
+  s[0] += 0.01;
+  s[9] += 2000.0;
+  std::string c4 = encoder.EncodeSample(s);
+  assert(static_cast<uint8_t>(c4[2]) == static_cast<uint8_t>(Brt1ChunkType::Baseline));
+
+  std::cout << "TestBrt1NaNAndKeyframeHandling passed!" << std::endl;
+}
+
 int main() {
+  std::cout << "Running unit tests for BRT1 Protocol..." << std::endl;
+  TestBrt1FramingAndMagic();
+  TestBrt1StreamRoundTrip();
+  TestBrt1NaNAndKeyframeHandling();
   std::cout << "Running unit tests for MatrixToQuaternion..." << std::endl;
   TestIdentityMatrix();
   TestRotation90X();

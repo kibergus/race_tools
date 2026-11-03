@@ -127,6 +127,27 @@ void TestConfigSerialization() {
   std::filesystem::remove(tempPath, ec);
 }
 
+void TestDefaultConfig() {
+  PluginConfig cfg = MakeDefaultPluginConfig(L"C:\\Telemetry");
+  TEST_ASSERT(cfg.simulator == "auto" && cfg.league == "auto", "Default simulator/league should be auto");
+  TEST_ASSERT(cfg.sinks.size() == 2, "Default config must have exactly 2 sinks");
+  TEST_ASSERT(cfg.sinks[0].type == "file" && cfg.sinks[0].enabled && cfg.sinks[0].path == "C:\\Telemetry",
+              "Default file sink mismatch");
+  TEST_ASSERT(cfg.sinks[1].type == "http" && !cfg.sinks[1].enabled, "Default http sink must be disabled");
+
+  // Saving into a non-existent directory fails; the daemon must keep the defaults untouched.
+  std::wstring badPath = std::filesystem::temp_directory_path().wstring() +
+                         L"\\brbr_no_such_dir_" + std::to_wstring(GetCurrentProcessId()) + L"\\cfg.json";
+  bool threw = false;
+  try {
+    SavePluginConfig(badPath, cfg);
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  TEST_ASSERT(threw, "SavePluginConfig into missing directory should throw");
+  TEST_ASSERT(cfg.sinks.size() == 2, "Failed save must not modify the config");
+}
+
 void TestSharedMemoryMappingAndReading() {
   std::wstring physMap = L"Local\\test_unit_phys";
   std::wstring graphMap = L"Local\\test_unit_graph";
@@ -158,23 +179,32 @@ void TestSharedMemoryMappingAndReading() {
   TEST_ASSERT(reader.Connect(), "Reader should connect to mock mappings");
 
   SPageFilePhysics physOut{};
+  TEST_ASSERT(reader.ReadPhysicsResult(physOut) == ShmReadResult::Ok, "Should read physics with ShmReadResult::Ok");
   TEST_ASSERT(reader.ReadPhysics(physOut), "Should read physics");
   TEST_ASSERT(physOut.packetId == 42, "Physics packetId should match");
   TEST_ASSERT(std::abs(physOut.speedKmh - 180.5f) < 0.01f, "Physics speed should match");
   TEST_ASSERT(std::abs(physOut.gas - 0.85f) < 0.01f, "Physics gas should match");
 
   SPageFileGraphicEvo graphOut{};
+  TEST_ASSERT(reader.ReadGraphicsResult(graphOut) == ShmReadResult::Ok, "Should read graphics with ShmReadResult::Ok");
   TEST_ASSERT(reader.ReadGraphics(graphOut), "Should read graphics");
   TEST_ASSERT(graphOut.status == AC_LIVE, "Graphics status should match");
   TEST_ASSERT(strcmp(graphOut.driver_name, "Max") == 0, "Graphics driver name should match");
 
   SPageFileStaticEvo statOut{};
+  TEST_ASSERT(reader.ReadStaticResult(statOut) == ShmReadResult::Ok, "Should read static with ShmReadResult::Ok");
   TEST_ASSERT(reader.ReadStatic(statOut), "Should read static");
   TEST_ASSERT(strcmp(statOut.track, "Spa") == 0, "Static track should match");
   TEST_ASSERT(strcmp(statOut.session_name, "Race") == 0, "Static session should match");
   TEST_ASSERT(strcmp(statOut.ac_evo_version, "0.1.0") == 0, "Static ac_evo_version should match");
 
   reader.Disconnect();
+
+  // Test disconnection behavior
+  TEST_ASSERT(reader.ReadPhysicsResult(physOut) == ShmReadResult::NotConnected,
+              "ReadPhysicsResult should return NotConnected when disconnected");
+  TEST_ASSERT(!reader.ReadPhysics(physOut), "ReadPhysics should return false when disconnected");
+
   mock.Shutdown();
 }
 
@@ -245,6 +275,12 @@ void TestTelemetryCollectorWithMockSim() {
   fSink.path = std::filesystem::path(tempLogDir).string();
   fSink.enabled = true;
   cfg.sinks.push_back(fSink);
+
+  // Same directory spelled differently: must be detected as a duplicate and skipped,
+  // otherwise two FileSinks would truncate and write the same CSV concurrently.
+  SinkConfig fSinkDup = fSink;
+  fSinkDup.path = std::filesystem::path(tempLogDir).string() + "\\.\\";
+  cfg.sinks.push_back(fSinkDup);
 
   auto reader = std::make_shared<AceSharedMemoryReader>();
   reader->SetCustomMapNames(physMap, graphMap, statMap);
@@ -648,6 +684,55 @@ void TestSessionStateTransitions() {
   std::filesystem::remove_all(tempLogDir, ec);
 }
 
+void TestBrt1Protocol() {
+  auto channels = GetBrBrDaemonBrt1Channels();
+  TEST_ASSERT(channels.size() == 62, "brbrdaemon must have 62 channels (including Handbrake)");
+
+  Brt1StreamEncoder encoder(channels);
+  std::string magic = encoder.EncodeMagicChunk();
+  TEST_ASSERT(magic.size() == 7, "Magic chunk must be 7 bytes");
+  TEST_ASSERT(magic[2] == static_cast<char>(Brt1ChunkType::Magic), "Magic chunk type should be 0x01");
+  TEST_ASSERT(magic.substr(3, 4) == "BRT1", "Magic payload should be BRT1");
+
+  Brt1SessionMetadata meta;
+  meta.trackName = ""; // test fallback
+  meta.className = ""; // test fallback
+  std::string metaChunk = encoder.EncodeMetadataChunk(meta);
+  TEST_ASSERT(metaChunk.size() > 3, "Metadata chunk should have payload");
+  TEST_ASSERT(metaChunk[2] == static_cast<char>(Brt1ChunkType::MetadataJson), "Metadata chunk type should be 0x02");
+  TEST_ASSERT(metaChunk.find("\"Class\":\"Unknown Class\"") != std::string::npos, "Metadata should fallback Class");
+  TEST_ASSERT(metaChunk.find("\"Track name\":\"Unknown Track\"") != std::string::npos, "Metadata should fallback Track name");
+
+  std::vector<double> sample1(62, 0.0);
+  sample1[0] = 1000.0; // Time
+  sample1[11] = 50.0;  // Handbrake
+  sample1[13] = std::numeric_limits<double>::quiet_NaN(); // Toe FL
+
+  std::string chunk1 = encoder.EncodeSample(sample1);
+  TEST_ASSERT(chunk1[2] == static_cast<char>(Brt1ChunkType::Baseline), "First sample should be baseline chunk");
+
+  std::vector<double> sample2 = sample1;
+  sample2[0] = 1000.02; // +20ms delta -> 20 ticks at scale 0.001
+  sample2[11] = 55.0;   // +5.0 delta -> 50 ticks at scale 0.1
+  std::string chunk2 = encoder.EncodeSample(sample2);
+  TEST_ASSERT(chunk2[2] == static_cast<char>(Brt1ChunkType::Delta), "Second sample should be delta chunk");
+
+  // Single Source of Truth validation:
+  // CSV header columns generated from GetBrBrDaemonBrt1Channels() must match channel names exactly
+  std::string csvHeaders = GetBrBrDaemonCsvHeaders();
+  TEST_ASSERT(!csvHeaders.empty() && csvHeaders.back() == '\n', "CSV headers must end with newline");
+  std::string headersTrimmed = csvHeaders.substr(0, csvHeaders.size() - 1);
+  std::stringstream ss(headersTrimmed);
+  std::string item;
+  size_t idx = 0;
+  while (std::getline(ss, item, ',')) {
+    TEST_ASSERT(idx < channels.size(), "Too many columns in CSV header");
+    TEST_ASSERT(item == channels[idx].name, "CSV header column name mismatch");
+    idx++;
+  }
+  TEST_ASSERT(idx == channels.size(), "CSV header column count must match channel count");
+}
+
 int main() {
   std::cout << "==================================================\n";
   std::cout << "Running Assetto Corsa / Evo / Rally Unit Tests...\n";
@@ -658,10 +743,12 @@ int main() {
   RUN_TEST(TestSanitizeFilename);
   RUN_TEST(TestParseServerAddress);
   RUN_TEST(TestConfigSerialization);
+  RUN_TEST(TestDefaultConfig);
   RUN_TEST(TestSharedMemoryMappingAndReading);
   RUN_TEST(TestAcRallySharedMemoryMappingAndReading);
   RUN_TEST(TestClassicAssettoCorsaLayout);
   RUN_TEST(TestFormatTelemetryLine);
+  RUN_TEST(TestBrt1Protocol);
   RUN_TEST(TestSessionStateTransitions);
   RUN_TEST(TestTelemetryCollectorWithMockSim);
   RUN_TEST(TestAcRallyTelemetryCollectorSession);

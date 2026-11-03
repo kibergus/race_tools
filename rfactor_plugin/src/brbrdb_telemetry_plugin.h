@@ -142,6 +142,12 @@ private:
 
   void LoadAndApplyConfig();
   void LoggerThreadWorker();
+  void ExtractTelemetryData(const TelemInfoV01& info,
+                            const std::chrono::system_clock::time_point& sessionStartTime,
+                            double startElapsedTime,
+                            unsigned char flag,
+                            std::vector<double>& outValues,
+                            std::string& outCsvLine);
   std::string FormatTelemetryLine(const TelemInfoV01& info,
                                  const std::chrono::system_clock::time_point& sessionStartTime,
                                  double startElapsedTime,

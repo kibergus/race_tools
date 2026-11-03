@@ -29,6 +29,7 @@
 #include <winhttp.h>
 #include "logger.h"
 #include "safe_queue.h"
+#include "brt1_protocol.h"
 
 namespace race_tools {
 
@@ -52,16 +53,20 @@ private:
 // Abstract base class representing a telemetry destination (sink).
 class Sink {
 public:
+  using SessionMetadata = Brt1SessionMetadata;
+
   // Signals that a telemetry logging session has started.
   struct StartSession {
     std::chrono::system_clock::time_point sessionStartTime;
     std::string participantTag = "";
+    SessionMetadata metadata = {};
   };
 
   // A chunk of metadata or CSV telemetry to be written to the sink.
   struct Line {
     std::string text;
     bool is_header = false;
+    std::vector<double> values = {};
   };
 
   // Signals that the telemetry logging session has ended.
@@ -145,15 +150,16 @@ private:
   bool connected_ = false;
   std::atomic<bool> aborted_{false};
 
-  // Stream state
-  std::vector<std::string> headers_;
+  // BRT1 stream encoder & metadata
+  Brt1StreamEncoder encoder_;
+  Brt1SessionMetadata metadata_;
 
   // Telemetry buffer for reconnect/retry
-  struct BufferedLine {
+  struct BufferedSample {
     std::chrono::steady_clock::time_point timestamp;
-    std::string text;
+    std::vector<double> values;
   };
-  std::deque<BufferedLine> buffer_;
+  std::deque<BufferedSample> buffer_;
   std::chrono::seconds bufferDuration_;
 
   // Reconnection tracking

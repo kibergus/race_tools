@@ -108,4 +108,10 @@ struct SPageFileStaticClassic {
 
 #pragma pack(pop)
 
+// Layout regression checks (on Windows where sizeof(wchar_t) == 2)
+#if defined(_WIN32) || defined(_MSC_VER)
+static_assert(sizeof(SPageFileGraphicClassic) == 1252, "SPageFileGraphicClassic size mismatch");
+static_assert(sizeof(SPageFileStaticClassic) == 688, "SPageFileStaticClassic size mismatch");
+#endif
+
 } // namespace ks

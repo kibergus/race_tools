@@ -73,21 +73,26 @@ const MapCandidate kAcCandidates[] = {
 };
 
 template <typename T>
-bool ReadSeqlockStruct(const void* rawPtr, T& out) {
-  if (!rawPtr) return false;
+ShmReadResult ReadSeqlockStruct(const void* rawPtr, size_t regionSize, T& out) {
+  if (!rawPtr) return ShmReadResult::NotConnected;
+  if (regionSize < sizeof(int)) return ShmReadResult::NotConnected;
+
   const volatile int* pPacketId = static_cast<const volatile int*>(rawPtr);
   constexpr int kMaxAttempts = 5;
+  size_t bytesToCopy = (std::min)(regionSize, sizeof(T));
+
   for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
     int idBefore = *pPacketId;
     std::atomic_thread_fence(std::memory_order_acquire);
-    std::memcpy(&out, rawPtr, sizeof(T));
+    std::memset(&out, 0, sizeof(T));
+    std::memcpy(&out, rawPtr, bytesToCopy);
     std::atomic_thread_fence(std::memory_order_acquire);
     int idAfter = *pPacketId;
     if (idBefore == idAfter) {
-      return true;
+      return ShmReadResult::Ok;
     }
   }
-  return true;
+  return ShmReadResult::Torn;
 }
 
 } // namespace
@@ -199,6 +204,19 @@ bool AceSharedMemoryReader::TryOpenMapGroup(SimulatorType simType,
   pPhysicsRaw_ = pPhys;
   pGraphicsRaw_ = pGraph;
   pStaticRaw_ = pStat;
+
+  auto queryRegionSize = [](const void* ptr) -> size_t {
+    if (!ptr) return 0;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) != 0) {
+      return mbi.RegionSize;
+    }
+    return 0;
+  };
+
+  physicsSize_ = queryRegionSize(pPhys);
+  graphicsSize_ = queryRegionSize(pGraph);
+  staticSize_ = queryRegionSize(pStat);
 
   physicsMapName_ = physName;
   graphicsMapName_ = graphName;
@@ -316,6 +334,10 @@ void AceSharedMemoryReader::Disconnect() {
     hStatic_ = nullptr;
   }
 
+  physicsSize_ = 0;
+  graphicsSize_ = 0;
+  staticSize_ = 0;
+
   if (!hasCustomMapNames_) {
     detectedSim_ = SimulatorType::Unknown;
     detectedLayout_ = LayoutFormat::Unknown;
@@ -344,12 +366,16 @@ std::string AceSharedMemoryReader::GetDefaultLeague() const {
   }
 }
 
-bool AceSharedMemoryReader::ReadPhysics(SPageFilePhysics& out) {
-  return ReadSeqlockStruct(pPhysicsRaw_, out);
+ShmReadResult AceSharedMemoryReader::ReadPhysicsResult(SPageFilePhysics& out) {
+  return ReadSeqlockStruct(pPhysicsRaw_, physicsSize_, out);
 }
 
-bool AceSharedMemoryReader::ReadUnifiedStatic(UnifiedStaticInfo& out) {
-  if (!pStaticRaw_) return false;
+bool AceSharedMemoryReader::ReadPhysics(SPageFilePhysics& out) {
+  return ReadPhysicsResult(out) == ShmReadResult::Ok;
+}
+
+ShmReadResult AceSharedMemoryReader::ReadUnifiedStaticResult(UnifiedStaticInfo& out) {
+  if (!pStaticRaw_) return ShmReadResult::NotConnected;
 
   const char* raw = static_cast<const char*>(pStaticRaw_);
   if (customLayout_ != LayoutFormat::Unknown) {
@@ -361,8 +387,9 @@ bool AceSharedMemoryReader::ReadUnifiedStatic(UnifiedStaticInfo& out) {
   }
 
   if (detectedLayout_ == LayoutFormat::Classic) {
-    ks::SPageFileStaticClassic st;
-    std::memcpy(&st, pStaticRaw_, sizeof(st));
+    ks::SPageFileStaticClassic st{};
+    size_t copyBytes = (std::min)(staticSize_, sizeof(st));
+    std::memcpy(&st, pStaticRaw_, copyBytes);
     out.track = WideToUtf8Str(st.track, 33);
     out.trackConfiguration = WideToUtf8Str(st.trackConfiguration, 33);
     out.gameVersion = WideToUtf8Str(st.acVersion, 15);
@@ -373,10 +400,11 @@ bool AceSharedMemoryReader::ReadUnifiedStatic(UnifiedStaticInfo& out) {
     out.sessionName = "";
     out.latitude = 0.0f;
     out.longitude = 0.0f;
-    return true;
+    return ShmReadResult::Ok;
   } else {
-    SPageFileStaticEvo st;
-    std::memcpy(&st, pStaticRaw_, sizeof(st));
+    SPageFileStaticEvo st{};
+    size_t copyBytes = (std::min)(staticSize_, sizeof(st));
+    std::memcpy(&st, pStaticRaw_, copyBytes);
     out.track = CharToUtf8Str(st.track, sizeof(st.track));
     out.trackConfiguration = CharToUtf8Str(st.track_configuration, sizeof(st.track_configuration));
     out.gameVersion = CharToUtf8Str(st.ac_evo_version, sizeof(st.ac_evo_version));
@@ -387,16 +415,21 @@ bool AceSharedMemoryReader::ReadUnifiedStatic(UnifiedStaticInfo& out) {
     out.sessionType = st.session;
     out.latitude = st.latitude;
     out.longitude = st.longitude;
-    return true;
+    return ShmReadResult::Ok;
   }
 }
 
-bool AceSharedMemoryReader::ReadUnifiedGraphic(UnifiedGraphicInfo& out) {
-  if (!pGraphicsRaw_) return false;
+bool AceSharedMemoryReader::ReadUnifiedStatic(UnifiedStaticInfo& out) {
+  return ReadUnifiedStaticResult(out) == ShmReadResult::Ok;
+}
+
+ShmReadResult AceSharedMemoryReader::ReadUnifiedGraphicResult(UnifiedGraphicInfo& out) {
+  if (!pGraphicsRaw_) return ShmReadResult::NotConnected;
 
   if (detectedLayout_ == LayoutFormat::Classic) {
     ks::SPageFileGraphicClassic gr{};
-    if (!ReadSeqlockStruct(pGraphicsRaw_, gr)) return false;
+    ShmReadResult res = ReadSeqlockStruct(pGraphicsRaw_, graphicsSize_, gr);
+    if (res != ShmReadResult::Ok) return res;
 
     out.packetId = gr.packetId;
     out.status = gr.status;
@@ -408,15 +441,18 @@ bool AceSharedMemoryReader::ReadUnifiedGraphic(UnifiedGraphicInfo& out) {
     out.carCoordinates[2] = gr.carCoordinates[0][2];
 
     if (pStaticRaw_) {
-      const ks::SPageFileStaticClassic* pStat = static_cast<const ks::SPageFileStaticClassic*>(pStaticRaw_);
-      out.driverName = WideToUtf8Str(pStat->playerName, 33);
-      out.driverSurname = WideToUtf8Str(pStat->playerSurname, 33);
-      out.carModel = WideToUtf8Str(pStat->carModel, 33);
+      ks::SPageFileStaticClassic st{};
+      size_t copyBytes = (std::min)(staticSize_, sizeof(st));
+      std::memcpy(&st, pStaticRaw_, copyBytes);
+      out.driverName = WideToUtf8Str(st.playerName, 33);
+      out.driverSurname = WideToUtf8Str(st.playerSurname, 33);
+      out.carModel = WideToUtf8Str(st.carModel, 33);
     }
-    return true;
+    return ShmReadResult::Ok;
   } else {
     SPageFileGraphicEvo gr{};
-    if (!ReadSeqlockStruct(pGraphicsRaw_, gr)) return false;
+    ShmReadResult res = ReadSeqlockStruct(pGraphicsRaw_, graphicsSize_, gr);
+    if (res != ShmReadResult::Ok) return res;
 
     out.packetId = gr.packetId;
     out.status = gr.status;
@@ -430,16 +466,21 @@ bool AceSharedMemoryReader::ReadUnifiedGraphic(UnifiedGraphicInfo& out) {
     out.carCoordinates[0] = gr.car_coordinates[0][0];
     out.carCoordinates[1] = gr.car_coordinates[0][1];
     out.carCoordinates[2] = gr.car_coordinates[0][2];
-    return true;
+    return ShmReadResult::Ok;
   }
 }
 
-bool AceSharedMemoryReader::ReadGraphics(SPageFileGraphicEvo& out) {
-  if (!pGraphicsRaw_) return false;
+bool AceSharedMemoryReader::ReadUnifiedGraphic(UnifiedGraphicInfo& out) {
+  return ReadUnifiedGraphicResult(out) == ShmReadResult::Ok;
+}
+
+ShmReadResult AceSharedMemoryReader::ReadGraphicsResult(SPageFileGraphicEvo& out) {
+  if (!pGraphicsRaw_) return ShmReadResult::NotConnected;
 
   if (detectedLayout_ == LayoutFormat::Classic) {
     UnifiedGraphicInfo ug;
-    if (!ReadUnifiedGraphic(ug)) return false;
+    ShmReadResult res = ReadUnifiedGraphicResult(ug);
+    if (res != ShmReadResult::Ok) return res;
     out.packetId = ug.packetId;
     out.status = ug.status;
     out.flag = ug.flag;
@@ -450,18 +491,23 @@ bool AceSharedMemoryReader::ReadGraphics(SPageFileGraphicEvo& out) {
     strncpy_s(out.driver_name, ug.driverName.c_str(), _TRUNCATE);
     strncpy_s(out.driver_surname, ug.driverSurname.c_str(), _TRUNCATE);
     strncpy_s(out.car_model, ug.carModel.c_str(), _TRUNCATE);
-    return true;
+    return ShmReadResult::Ok;
   }
 
-  return ReadSeqlockStruct(pGraphicsRaw_, out);
+  return ReadSeqlockStruct(pGraphicsRaw_, graphicsSize_, out);
 }
 
-bool AceSharedMemoryReader::ReadStatic(SPageFileStaticEvo& out) {
-  if (!pStaticRaw_) return false;
+bool AceSharedMemoryReader::ReadGraphics(SPageFileGraphicEvo& out) {
+  return ReadGraphicsResult(out) == ShmReadResult::Ok;
+}
+
+ShmReadResult AceSharedMemoryReader::ReadStaticResult(SPageFileStaticEvo& out) {
+  if (!pStaticRaw_) return ShmReadResult::NotConnected;
 
   if (detectedLayout_ == LayoutFormat::Classic) {
     UnifiedStaticInfo us;
-    if (!ReadUnifiedStatic(us)) return false;
+    ShmReadResult res = ReadUnifiedStaticResult(us);
+    if (res != ShmReadResult::Ok) return res;
     strncpy_s(out.track, us.track.c_str(), _TRUNCATE);
     strncpy_s(out.track_configuration, us.trackConfiguration.c_str(), _TRUNCATE);
     strncpy_s(out.ac_evo_version, us.gameVersion.c_str(), _TRUNCATE);
@@ -469,20 +515,28 @@ bool AceSharedMemoryReader::ReadStatic(SPageFileStaticEvo& out) {
     out.session = us.sessionType;
     out.latitude = us.latitude;
     out.longitude = us.longitude;
-    return true;
+    return ShmReadResult::Ok;
   }
 
-  std::memcpy(&out, pStaticRaw_, sizeof(SPageFileStaticEvo));
-  return true;
+  std::memset(&out, 0, sizeof(out));
+  size_t copyBytes = (std::min)(staticSize_, sizeof(out));
+  std::memcpy(&out, pStaticRaw_, copyBytes);
+  return ShmReadResult::Ok;
+}
+
+bool AceSharedMemoryReader::ReadStatic(SPageFileStaticEvo& out) {
+  return ReadStaticResult(out) == ShmReadResult::Ok;
 }
 
 bool AceSharedMemoryReader::ReadGraphicsClassic(SPageFileGraphicClassic& out) {
-  return ReadSeqlockStruct(pGraphicsRaw_, out);
+  return ReadSeqlockStruct(pGraphicsRaw_, graphicsSize_, out) == ShmReadResult::Ok;
 }
 
 bool AceSharedMemoryReader::ReadStaticClassic(SPageFileStaticClassic& out) {
   if (!pStaticRaw_) return false;
-  std::memcpy(&out, pStaticRaw_, sizeof(SPageFileStaticClassic));
+  std::memset(&out, 0, sizeof(out));
+  size_t copyBytes = (std::min)(staticSize_, sizeof(out));
+  std::memcpy(&out, pStaticRaw_, copyBytes);
   return true;
 }
 

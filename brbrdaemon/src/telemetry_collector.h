@@ -72,6 +72,16 @@ public:
   // Stop background collector thread
   void Stop();
 
+  // Extracts numeric channel values and formats CSV line
+  static void ExtractTelemetryData(
+      const SPageFilePhysics& physics,
+      const UnifiedGraphicInfo& graphics,
+      const std::chrono::system_clock::time_point& sessionStartRealTime,
+      std::chrono::steady_clock::time_point sessionStartSteadyTime,
+      std::chrono::steady_clock::time_point nowSteadyTime,
+      std::vector<double>& outValues,
+      std::string& outCsvLine);
+
   // Formats a single CSV line for testing or output (UnifiedGraphicInfo)
   static std::string FormatTelemetryLine(
       const SPageFilePhysics& physics,

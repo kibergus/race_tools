@@ -67,6 +67,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 add_library(BrBrDbTelemetry SHARED 
     src/brbrdb_telemetry_plugin.cpp 
     src/brbrdb_telemetry_plugin.h
+    src/brt1_protocol.cpp
+    src/brt1_protocol.h
     src/sink.cpp
     src/sink.h
     src/config.cpp
@@ -98,6 +100,8 @@ add_executable(mock_runner
     src/mock_runner.cpp
     src/brbrdb_telemetry_plugin.cpp 
     src/brbrdb_telemetry_plugin.h
+    src/brt1_protocol.cpp
+    src/brt1_protocol.h
     src/sink.cpp
     src/sink.h
     src/config.cpp
@@ -118,6 +122,8 @@ add_executable(unit_tests
     src/unit_tests.cpp
     src/brbrdb_telemetry_plugin.cpp
     src/brbrdb_telemetry_plugin.h
+    src/brt1_protocol.cpp
+    src/brt1_protocol.h
     src/config.cpp
     src/config.h
     src/safe_queue.h

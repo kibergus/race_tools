@@ -41,6 +41,26 @@ std::wstring GetConfigFilePath() {
   return dir + L"\\BrBrDbTelemetry.json";
 }
 
+PluginConfig MakeDefaultPluginConfig(const std::wstring& telemetryDir) {
+  PluginConfig config;
+  config.simulator = "auto";
+  config.league = "auto";
+
+  SinkConfig fileSink;
+  fileSink.type = "file";
+  fileSink.path = std::filesystem::path(telemetryDir).u8string();
+  fileSink.enabled = true;
+  config.sinks.push_back(fileSink);
+
+  SinkConfig httpSink;
+  httpSink.type = "http";
+  httpSink.serverAddress = "https://brbrdb.brbrkitten.com";
+  httpSink.enabled = false;
+  config.sinks.push_back(httpSink);
+
+  return config;
+}
+
 PluginConfig LoadPluginConfig(const std::wstring& path) {
   std::ifstream file(path);
   if (!file.is_open()) {

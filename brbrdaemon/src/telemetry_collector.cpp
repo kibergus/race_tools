@@ -21,6 +21,8 @@
 #include <regex>
 #include <cctype>
 #include <algorithm>
+#include <set>
+#include <cwctype>
 #include <timeapi.h>
 #pragma comment(lib, "winmm.lib")
 
@@ -148,21 +150,22 @@ std::string SessionTypeToString(int sessionType) {
   }
 }
 
-const std::string csvColumnHeaders =
-    "Time,x,z,Speed,GForceLat,GForceLon,GForceVert,Throttle,Brake,Steering Angle,Clutch,Handbrake,Gear,"
-    "Toe FL,Toe FR,Toe RL,Toe RR,"
-    "Ori Quat X,Ori Quat Y,Ori Quat Z,Ori Quat W,"
-    "RPS FL,RPS FR,RPS RL,RPS RR,"
-    "Lat Patch Vel FL,Lat Patch Vel FR,Lat Patch Vel RL,Lat Patch Vel RR,"
-    "Long Patch Vel FL,Long Patch Vel FR,Long Patch Vel RL,Long Patch Vel RR,"
-    "Tyre Load FL,Tyre Load FR,Tyre Load RL,Tyre Load RR,"
-    "Lat Force FL,Lat Force FR,Lat Force RL,Lat Force RR,"
-    "Long Force FL,Long Force FR,Long Force RL,Long Force RR,"
-    "Slide Pct FL,Slide Pct FR,Slide Pct RL,Slide Pct RR,"
-    "Flag,"
-    "Track Temp,Ambient Temp,Raining,Avg Track Wetness,"
-    "Tyre Surf Temp FL,Tyre Surf Temp FR,Tyre Surf Temp RL,Tyre Surf Temp RR,"
-    "Tyre Carcass Temp FL,Tyre Carcass Temp FR,Tyre Carcass Temp RL,Tyre Carcass Temp RR\n";
+// Produces a comparison key for a directory so that "C:\\T", "c:/t/" and "C:\\T\\." are
+// treated as the same location (Windows paths are case-insensitive).
+std::wstring NormalizeDirKey(const std::wstring& dir) {
+  std::error_code ec;
+  std::filesystem::path p = std::filesystem::absolute(std::filesystem::path(dir), ec);
+  if (ec) p = std::filesystem::path(dir);
+  p = p.lexically_normal();
+  std::wstring key = p.wstring();
+  while (key.size() > 1 && (key.back() == L'\\' || key.back() == L'/')) {
+    key.pop_back();
+  }
+  for (auto& c : key) {
+    c = (c == L'/') ? L'\\' : static_cast<wchar_t>(towlower(c));
+  }
+  return key;
+}
 
 } // namespace
 
@@ -211,12 +214,14 @@ std::string TelemetryCollector::GetConnectedSimulatorName() const {
   return "Assetto Corsa";
 }
 
-std::string TelemetryCollector::FormatTelemetryLine(
+void TelemetryCollector::ExtractTelemetryData(
     const SPageFilePhysics& physics,
     const UnifiedGraphicInfo& graphics,
     const std::chrono::system_clock::time_point& sessionStartRealTime,
     std::chrono::steady_clock::time_point sessionStartSteadyTime,
-    std::chrono::steady_clock::time_point nowSteadyTime) {
+    std::chrono::steady_clock::time_point nowSteadyTime,
+    std::vector<double>& outValues,
+    std::string& outCsvLine) {
 
   // 1. Time (ISO-8601 UTC)
   double elapsedSec = std::chrono::duration<double>(nowSteadyTime - sessionStartSteadyTime).count();
@@ -234,6 +239,8 @@ std::string TelemetryCollector::FormatTelemetryLine(
   sprintf_s(timeStr, "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
             gm_tm.tm_year + 1900, gm_tm.tm_mon + 1, gm_tm.tm_mday,
             gm_tm.tm_hour, gm_tm.tm_min, gm_tm.tm_sec, static_cast<int>(millis));
+
+  double timeSeconds = std::chrono::duration<double>(duration).count();
 
   // 2. Position: x, z
   double posX = 0.0, posZ = 0.0;
@@ -279,8 +286,6 @@ std::string TelemetryCollector::FormatTelemetryLine(
   int gear = (physics.gear > 0) ? (physics.gear - 1) : -1;
 
   // 6. Steering Angle in degrees
-  // If steerDegrees is provided directly by Evo graphics, use it;
-  // otherwise convert radians/input to degrees.
   double steering = 0.0;
   if (graphics.steerDegrees != 0) {
     steering = static_cast<double>(graphics.steerDegrees);
@@ -292,82 +297,81 @@ std::string TelemetryCollector::FormatTelemetryLine(
   double qx = 0.0, qy = 0.0, qz = 0.0, qw = 1.0;
   EulerToQuaternion(physics.heading, physics.pitch, physics.roll, qx, qy, qz, qw);
 
-  std::stringstream ss;
-  ss << std::fixed << std::setprecision(5)
-     << timeStr << "," << posX << "," << posZ << "," << speed << ","
-     << gForceLat << "," << gForceLon << "," << gForceVert << ","
-     << throttle << "," << brake << "," << steering << ","
-     << clutch << "," << handbrake << "," << gear << ",";
+  double rpsFL = physics.wheelAngularSpeed[0] / TWO_PI;
+  double rpsFR = physics.wheelAngularSpeed[1] / TWO_PI;
+  double rpsRL = physics.wheelAngularSpeed[2] / TWO_PI;
+  double rpsRR = physics.wheelAngularSpeed[3] / TWO_PI;
 
-  // Wheels Toe: FL, FR, RL, RR
-  // Note: Individual toe angles are not exposed in AC/ACE shared memory.
-  // Output empty fields rather than incorrect camber data.
-  ss << ",,,,";
+  double slidePctFL = physics.wheelSlip[0] * 100.0;
+  double slidePctFR = physics.wheelSlip[1] * 100.0;
+  double slidePctRL = physics.wheelSlip[2] * 100.0;
+  double slidePctRR = physics.wheelSlip[3] * 100.0;
 
-  // Orientation Quaternion
-  ss << qx << "," << qy << "," << qz << "," << qw << ",";
-
-  // Wheels RPS (Rad/s to Rev/s): FL, FR, RL, RR
-  ss << (physics.wheelAngularSpeed[0] / TWO_PI) << ","
-     << (physics.wheelAngularSpeed[1] / TWO_PI) << ","
-     << (physics.wheelAngularSpeed[2] / TWO_PI) << ","
-     << (physics.wheelAngularSpeed[3] / TWO_PI) << ",";
-
-  // Wheels Lat Patch Vel: FL, FR, RL, RR
-  // Note: Wheel patch velocities are not exposed in AC/ACE shared memory. Empty fields.
-  ss << ",,,,";
-
-  // Wheels Long Patch Vel: FL, FR, RL, RR
-  ss << ",,,,";
-
-  // Wheels Tyre Load: FL, FR, RL, RR (N)
-  ss << physics.wheelLoad[0] << "," << physics.wheelLoad[1] << ","
-     << physics.wheelLoad[2] << "," << physics.wheelLoad[3] << ",";
-
-  // Wheels Lat Force: FL, FR, RL, RR (N) from SPageFilePhysics::fy
-  ss << physics.fy[0] << "," << physics.fy[1] << ","
-     << physics.fy[2] << "," << physics.fy[3] << ",";
-
-  // Wheels Long Force: FL, FR, RL, RR (N) from SPageFilePhysics::fx
-  ss << physics.fx[0] << "," << physics.fx[1] << ","
-     << physics.fx[2] << "," << physics.fx[3] << ",";
-
-  // Wheels Slide Pct (wheelSlip * 100)
-  ss << (physics.wheelSlip[0] * 100.0) << ","
-     << (physics.wheelSlip[1] * 100.0) << ","
-     << (physics.wheelSlip[2] * 100.0) << ","
-     << (physics.wheelSlip[3] * 100.0) << ","
-     << static_cast<int>(graphics.flag) << ",";
-
-  // Environmental conditions
-  // TODO: Populate raining and track wetness when weather telemetry is available
   double raining = 0.0;
   double trackWetness = 0.0;
-  ss << physics.roadTemp << ","
-     << physics.airTemp << ","
-     << raining << ","
-     << trackWetness << ",";
 
-  // Tyre Surface Temperatures in Kelvin (K = °C + 273.15)
-  auto formatTempK = [](float tempC) -> std::string {
-    if (std::isnan(tempC) || tempC < -273.15f) return "";
-    char buf[32];
-    sprintf_s(buf, "%.5f", static_cast<double>(tempC) + 273.15);
-    return std::string(buf);
+  const double nanVal = std::numeric_limits<double>::quiet_NaN();
+
+  auto getTempK = [](float tempC) -> double {
+    if (std::isnan(tempC) || tempC < -273.15f) return std::numeric_limits<double>::quiet_NaN();
+    return static_cast<double>(tempC) + 273.15;
   };
 
-  ss << formatTempK(physics.tyreTempM[0]) << ","
-     << formatTempK(physics.tyreTempM[1]) << ","
-     << formatTempK(physics.tyreTempM[2]) << ","
-     << formatTempK(physics.tyreTempM[3]) << ",";
+  double surfTempFL = getTempK(physics.tyreTempM[0]);
+  double surfTempFR = getTempK(physics.tyreTempM[1]);
+  double surfTempRL = getTempK(physics.tyreTempM[2]);
+  double surfTempRR = getTempK(physics.tyreTempM[3]);
 
-  // Tyre Carcass / Core Temperatures in Kelvin
-  ss << formatTempK(physics.tyreCoreTemperature[0]) << ","
-     << formatTempK(physics.tyreCoreTemperature[1]) << ","
-     << formatTempK(physics.tyreCoreTemperature[2]) << ","
-     << formatTempK(physics.tyreCoreTemperature[3]) << "\n";
+  double coreTempFL = getTempK(physics.tyreCoreTemperature[0]);
+  double coreTempFR = getTempK(physics.tyreCoreTemperature[1]);
+  double coreTempRL = getTempK(physics.tyreCoreTemperature[2]);
+  double coreTempRR = getTempK(physics.tyreCoreTemperature[3]);
 
-  return ss.str();
+  outValues = {
+    timeSeconds,
+    posX,
+    posZ,
+    speed,
+    gForceLat,
+    gForceLon,
+    gForceVert,
+    throttle,
+    brake,
+    steering,
+    clutch,
+    handbrake,
+    static_cast<double>(gear),
+    nanVal, nanVal, nanVal, nanVal,
+    qx, qy, qz, qw,
+    rpsFL, rpsFR, rpsRL, rpsRR,
+    nanVal, nanVal, nanVal, nanVal,
+    nanVal, nanVal, nanVal, nanVal,
+    physics.wheelLoad[0], physics.wheelLoad[1], physics.wheelLoad[2], physics.wheelLoad[3],
+    physics.fy[0], physics.fy[1], physics.fy[2], physics.fy[3],
+    physics.fx[0], physics.fx[1], physics.fx[2], physics.fx[3],
+    slidePctFL, slidePctFR, slidePctRL, slidePctRR,
+    static_cast<double>(graphics.flag),
+    physics.roadTemp,
+    physics.airTemp,
+    raining,
+    trackWetness,
+    surfTempFL, surfTempFR, surfTempRL, surfTempRR,
+    coreTempFL, coreTempFR, coreTempRL, coreTempRR
+  };
+
+  outCsvLine = FormatCsvLineFromValues(timeStr, outValues);
+}
+
+std::string TelemetryCollector::FormatTelemetryLine(
+    const SPageFilePhysics& physics,
+    const UnifiedGraphicInfo& graphics,
+    const std::chrono::system_clock::time_point& sessionStartRealTime,
+    std::chrono::steady_clock::time_point sessionStartSteadyTime,
+    std::chrono::steady_clock::time_point nowSteadyTime) {
+  std::vector<double> values;
+  std::string line;
+  ExtractTelemetryData(physics, graphics, sessionStartRealTime, sessionStartSteadyTime, nowSteadyTime, values, line);
+  return line;
 }
 
 std::string TelemetryCollector::FormatTelemetryLine(
@@ -453,13 +457,21 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
                     SanitizeFilename(sessionType);
 
   // Initialize Sinks
+  // File names are derived only from session data, so two file sinks pointing at the
+  // same directory would open (and truncate) the same CSV. Skip such duplicates.
+  std::set<std::wstring> fileSinkDirs;
   for (const auto& sinkConf : config_.sinks) {
     if (!sinkConf.enabled) continue;
 
     if (sinkConf.type == "file") {
       std::wstring path = defaultLogDir_;
       if (!sinkConf.path.empty()) {
-        path = std::filesystem::path(sinkConf.path).wstring();
+        path = std::filesystem::u8path(sinkConf.path).wstring();
+      }
+      std::wstring dirKey = NormalizeDirKey(path);
+      if (!fileSinkDirs.insert(dirKey).second) {
+        logger_.Write("Skipping duplicate file sink for directory: " + WideToUtf8(path));
+        continue;
       }
       try {
         std::error_code ec;
@@ -481,9 +493,6 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
     }
   }
 
-  // Push Start Event
-  sessionQueue_->Push(Sink::StartSession{sessionStartTime_, tag});
-
   // Write CSV Metadata Headers with proper CSV escaping
   std::time_t start_time_t = std::chrono::system_clock::to_time_t(sessionStartTime_);
   struct tm start_tm;
@@ -492,6 +501,19 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
   char timeBuf[32];
   sprintf_s(dateBuf, "%04d-%02d-%02d", start_tm.tm_year + 1900, start_tm.tm_mon + 1, start_tm.tm_mday);
   sprintf_s(timeBuf, "%02d:%02d:%02d", start_tm.tm_hour, start_tm.tm_min, start_tm.tm_sec);
+
+  Sink::SessionMetadata sessionMeta;
+  sessionMeta.trackName = trackName.empty() ? "Unknown Track" : trackName;
+  sessionMeta.date = dateBuf;
+  sessionMeta.time = timeBuf;
+  sessionMeta.driverName = driverName.empty() ? "Unknown Driver" : driverName;
+  sessionMeta.league = league.empty() ? "kartsim" : league;
+  sessionMeta.className = carName.empty() ? "Unknown Class" : carName;
+  sessionMeta.sessionName = sessionType.empty() ? "Practice" : sessionType;
+  sessionMeta.kartNumber = carNumber;
+
+  // Push Start Event
+  sessionQueue_->Push(Sink::StartSession{sessionStartTime_, tag, sessionMeta});
 
   std::stringstream ss;
   ss << "Track name," << EscapeCsvMetadata(trackName) << "\n";
@@ -521,7 +543,7 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
   ss << "\n"; // Blank line separator
 
   sessionQueue_->Push(Sink::Line{ss.str(), /*is_header=*/true});
-  sessionQueue_->Push(Sink::Line{csvColumnHeaders, /*is_header=*/true});
+  sessionQueue_->Push(Sink::Line{GetBrBrDaemonCsvHeaders(), /*is_header=*/true});
 
   inSession_.store(true, std::memory_order_release);
   sessionState_ = SessionState::Live;
@@ -594,17 +616,33 @@ void TelemetryCollector::PollingThreadWorker() {
       }
 
       // Read current data snapshots
-      bool physOk = shmReader_->ReadPhysics(physics);
-      bool graphOk = shmReader_->ReadUnifiedGraphic(graphics);
-      bool statOk = shmReader_->ReadUnifiedStatic(statics);
+      ShmReadResult physRes = shmReader_->ReadPhysicsResult(physics);
+      ShmReadResult graphRes = shmReader_->ReadUnifiedGraphicResult(graphics);
+      ShmReadResult statRes = shmReader_->ReadUnifiedStaticResult(statics);
 
-      if (!physOk || !graphOk || !statOk) {
+      if (physRes == ShmReadResult::NotConnected ||
+          graphRes == ShmReadResult::NotConnected ||
+          statRes == ShmReadResult::NotConnected) {
         if (inSession_.load()) {
           EndSession();
         }
         shmReader_->Disconnect();
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         nextTick = std::chrono::steady_clock::now();
+        continue;
+      }
+
+      if (physRes == ShmReadResult::Torn ||
+          graphRes == ShmReadResult::Torn ||
+          statRes == ShmReadResult::Torn) {
+        // Transient torn read detected across seqlock retry attempts.
+        // Skip this sampling tick without disconnecting or resetting the session.
+        auto now = std::chrono::steady_clock::now();
+        if (nextTick > now) {
+          std::this_thread::sleep_until(nextTick);
+        } else {
+          nextTick = now;
+        }
         continue;
       }
 
@@ -688,9 +726,11 @@ void TelemetryCollector::PollingThreadWorker() {
         }
 
         if (packetsAdvancing && inSession_.load()) {
-          std::string line = FormatTelemetryLine(physics, graphics, sessionStartTime_,
-                                                 sessionStartSteadyTime_, nowSteady);
-          sessionQueue_->Push(Sink::Line{std::move(line), /*is_header=*/false});
+          std::vector<double> values;
+          std::string line;
+          ExtractTelemetryData(physics, graphics, sessionStartTime_,
+                               sessionStartSteadyTime_, nowSteady, values, line);
+          sessionQueue_->Push(Sink::Line{std::move(line), /*is_header=*/false, std::move(values)});
         }
       } else if (graphics.status == 3 /* AC_PAUSE */) {
         if (sessionState_ == SessionState::Live) {

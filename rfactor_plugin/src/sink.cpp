@@ -237,8 +237,8 @@ void HttpSink::Abort() {
 
 void HttpSink::operator()(const StartSession& start) {
   sessionStartTime_ = start.sessionStartTime;
-  headers_.clear();
-  lineCount_ = 0;
+  metadata_ = start.metadata;
+  encoder_.Reset();
   buffer_.clear();
   backoff_.Reset();
   Disconnect();
@@ -248,16 +248,18 @@ void HttpSink::operator()(const StartSession& start) {
 }
 
 void HttpSink::operator()(const Line& line) {
-  auto now = std::chrono::steady_clock::now();
-
   if (line.is_header) {
-    headers_.push_back(line.text);
-  } else {
-    buffer_.push_back({now, line.text});
-    // Remove old lines from the buffer.
-    while (!buffer_.empty() && (now - buffer_.front().timestamp) > bufferDuration_) {
-      buffer_.pop_front();
-    }
+    // Header information is transmitted in BRT1 via Chunk 0x02 (Metadata JSON) on Connect().
+    return;
+  }
+  if (line.values.empty()) {
+    return;
+  }
+
+  auto now = std::chrono::steady_clock::now();
+  buffer_.push_back({now, line.values});
+  while (!buffer_.empty() && (now - buffer_.front().timestamp) > bufferDuration_) {
+    buffer_.pop_front();
   }
 
   if (connected_) {
@@ -274,17 +276,16 @@ void HttpSink::operator()(const Line& line) {
       logger_.Write("HttpSink - Attempting to connect/reconnect to " + serverAddress_ + "...");
       if (Connect()) {
         try {
-          for (const auto& h : headers_) {
-            WriteChunk(h);
-          }
-          if (!line.is_header && buffer_.size() > 1) {
+          encoder_.ResetDeltaState();
+          if (buffer_.size() > 1) {
             for (size_t i = 0; i < buffer_.size() - 1; ++i) {
-              WriteChunk(buffer_[i].text);
+              std::string chunk = encoder_.EncodeSample(buffer_[i].values);
+              WriteChunk(chunk);
             }
           }
           backoff_.Reset(); // Reset backoff since connection and data write succeeded
         } catch (const std::exception& e) {
-          logger_.Write(std::string("HttpSink - Failed to write headers/buffer after reconnect: ") + e.what());
+          logger_.Write(std::string("HttpSink - Failed to write buffer after reconnect: ") + e.what());
           Disconnect();
           return;
         }
@@ -294,7 +295,8 @@ void HttpSink::operator()(const Line& line) {
 
   if (connected_) {
     try {
-      WriteChunk(line.text);
+      std::string chunk = encoder_.EncodeSample(line.values);
+      WriteChunk(chunk);
     } catch (const std::exception& e) {
       logger_.Write(std::string("HttpSink - Write error: ") + e.what());
       Disconnect();
@@ -320,7 +322,7 @@ bool HttpSink::Finalize() {
       throw std::runtime_error("Failed to query HTTP status code (error code " + std::to_string(GetLastError()) + ")");
     }
 
-    if (statusCode != 200) {
+    if (statusCode != 200 && statusCode != 201 && statusCode != 204) {
       std::string responseBody;
       DWORD bytesAvailable = 0;
       if (WinHttpQueryDataAvailable(hRequest_, &bytesAvailable) && bytesAvailable > 0) {
@@ -372,11 +374,10 @@ void HttpSink::operator()(const EndSession& end) {
 
     if (Connect()) {
       try {
-        for (const auto& h : headers_) {
-          WriteChunk(h);
-        }
+        encoder_.ResetDeltaState();
         for (const auto& buffered : buffer_) {
-          WriteChunk(buffered.text);
+          std::string chunk = encoder_.EncodeSample(buffered.values);
+          WriteChunk(chunk);
         }
         if (Finalize()) {
           logger_.Write("HttpSink - Retried upload succeeded on attempt " +
@@ -429,8 +430,8 @@ bool HttpSink::Connect() {
       throw std::runtime_error("WinHttpOpenRequest failed (error code " + std::to_string(GetLastError()) + ")");
     }
 
-    // Add headers for Transfer-Encoding: chunked
-    std::wstring headers = L"Content-Type: text/csv\r\nTransfer-Encoding: chunked\r\n";
+    // Add headers for Transfer-Encoding: chunked (binary stream)
+    std::wstring headers = L"Content-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n";
     if (!apiKey_.empty()) {
       std::wstring wApiKey(apiKey_.begin(), apiKey_.end());
       headers += L"X-API-Key: " + wApiKey + L"\r\n";
@@ -450,6 +451,11 @@ bool HttpSink::Connect() {
     lastConnectTime_ = std::chrono::steady_clock::now();
     activeUploads_++;
     logger_.Write("HttpSink - Connected to " + serverAddress_);
+
+    // Stream initial BRT1 Magic and Metadata JSON chunks
+    WriteChunk(encoder_.EncodeMagicChunk());
+    WriteChunk(encoder_.EncodeMetadataChunk(metadata_));
+
     return true;
   } catch (const std::exception& e) {
     logger_.Write("HttpSink - Connection to " + serverAddress_ + " failed: " + e.what());
@@ -480,8 +486,10 @@ void HttpSink::Disconnect() {
 void HttpSink::WriteChunk(const std::string& data) {
   if (data.empty()) return;
   std::stringstream ss;
-  ss << std::hex << data.size() << "\r\n" << data << "\r\n";
+  ss << std::hex << data.size() << "\r\n";
   std::string chunk = ss.str();
+  chunk.append(data);
+  chunk.append("\r\n");
 
   DWORD bytesWritten = 0;
   if (!WinHttpWriteData(hRequest_, chunk.data(), (DWORD)chunk.size(), &bytesWritten)) {

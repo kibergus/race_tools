@@ -157,7 +157,8 @@ void HttpSink::Abort() {
 
 void HttpSink::operator()(const StartSession& start) {
   sessionStartTime_ = start.sessionStartTime;
-  headers_.clear();
+  metadata_ = start.metadata;
+  encoder_.Reset();
   buffer_.clear();
   backoff_.Reset();
   aborted_ = false;
@@ -169,16 +170,17 @@ void HttpSink::operator()(const StartSession& start) {
 
 void HttpSink::operator()(const Line& line) {
   if (aborted_) return;
+  if (line.is_header) {
+    return;
+  }
+  if (line.values.empty()) {
+    return;
+  }
 
   auto now = std::chrono::steady_clock::now();
-
-  if (line.is_header) {
-    headers_.push_back(line.text);
-  } else {
-    buffer_.push_back({now, line.text});
-    while (!buffer_.empty() && (now - buffer_.front().timestamp) > bufferDuration_) {
-      buffer_.pop_front();
-    }
+  buffer_.push_back({now, line.values});
+  while (!buffer_.empty() && (now - buffer_.front().timestamp) > bufferDuration_) {
+    buffer_.pop_front();
   }
 
   // Check proactive rollover
@@ -200,15 +202,16 @@ void HttpSink::operator()(const Line& line) {
       logger_.Write("HttpSink - Attempting to connect/reconnect to " + serverAddress_ + "...");
       if (Connect()) {
         try {
-          for (const auto& h : headers_) {
-            WriteChunk(h);
-          }
-          for (const auto& buffered : buffer_) {
-            WriteChunk(buffered.text);
+          encoder_.ResetDeltaState();
+          if (buffer_.size() > 1) {
+            for (size_t i = 0; i < buffer_.size() - 1; ++i) {
+              std::string chunk = encoder_.EncodeSample(buffer_[i].values);
+              WriteChunk(chunk);
+            }
           }
           backoff_.Reset();
         } catch (const std::exception& e) {
-          logger_.Write(std::string("HttpSink - Failed to write headers/buffer after reconnect: ") + e.what());
+          logger_.Write(std::string("HttpSink - Failed to write buffer after reconnect: ") + e.what());
           Disconnect();
           return;
         }
@@ -216,12 +219,11 @@ void HttpSink::operator()(const Line& line) {
     }
   }
 
-  // Write new line immediately upon arrival.
-  // NOTE: Intentionally do NOT batch writes here. Lines are written immediately
-  // via WinHttpWriteData chunk to ensure minimal latency for real-time monitoring consumers.
+  // Write new sample immediately upon arrival.
   if (connected_ && !aborted_) {
     try {
-      WriteChunk(line.text);
+      std::string chunk = encoder_.EncodeSample(line.values);
+      WriteChunk(chunk);
     } catch (const std::exception& e) {
       logger_.Write(std::string("HttpSink - Write error: ") + e.what());
       Disconnect();
@@ -311,11 +313,10 @@ void HttpSink::operator()(const EndSession& end) {
 
     if (Connect()) {
       try {
-        for (const auto& h : headers_) {
-          WriteChunk(h);
-        }
+        encoder_.ResetDeltaState();
         for (const auto& buffered : buffer_) {
-          WriteChunk(buffered.text);
+          std::string chunk = encoder_.EncodeSample(buffered.values);
+          WriteChunk(chunk);
         }
 
         if (Finalize()) {
@@ -357,51 +358,59 @@ bool HttpSink::Connect() {
       throw std::runtime_error("Invalid server address: " + serverAddress_);
     }
 
-    std::lock_guard<std::mutex> lock(handleMutex_);
+    {
+      std::lock_guard<std::mutex> lock(handleMutex_);
 
-    hSession_ = WinHttpOpen(L"BrBrDbTelemetry/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession_) {
-      throw std::runtime_error("WinHttpOpen failed (error code " + std::to_string(GetLastError()) + ")");
+      hSession_ = WinHttpOpen(L"BrBrDbTelemetry/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+      if (!hSession_) {
+        throw std::runtime_error("WinHttpOpen failed (error code " + std::to_string(GetLastError()) + ")");
+      }
+
+      WinHttpSetTimeouts(hSession_, 10000, 10000, 30000, 30000);
+
+      hConnect_ = WinHttpConnect(hSession_, addrInfo.host.c_str(), addrInfo.port, 0);
+      if (!hConnect_) {
+        throw std::runtime_error("WinHttpConnect failed (error code " + std::to_string(GetLastError()) + ")");
+      }
+
+      DWORD flags = addrInfo.useHttps ? WINHTTP_FLAG_SECURE : 0;
+      std::wstring path = addrInfo.path.empty() ? L"/api/upload/stream" : addrInfo.path;
+      hRequest_ = WinHttpOpenRequest(hConnect_, L"POST", path.c_str(), NULL, WINHTTP_NO_REFERER,
+                                     WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+      if (!hRequest_) {
+        throw std::runtime_error("WinHttpOpenRequest failed (error code " + std::to_string(GetLastError()) + ")");
+      }
+
+      // Add headers for Transfer-Encoding: chunked (binary stream)
+      std::wstring headers = L"Content-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n";
+      if (!apiKey_.empty()) {
+        headers += L"X-API-Key: " + Utf8ToWide(apiKey_) + L"\r\n";
+      }
+
+      if (!WinHttpAddRequestHeaders(hRequest_, headers.c_str(), static_cast<DWORD>(-1),
+                                   WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE)) {
+        throw std::runtime_error("WinHttpAddRequestHeaders failed (error code " + std::to_string(GetLastError()) + ")");
+      }
+
+      // Send Request with WINHTTP_IGNORE_REQUEST_TOTAL_LENGTH
+      bool sent = WinHttpSendRequest(hRequest_, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                     WINHTTP_NO_REQUEST_DATA, 0, WINHTTP_IGNORE_REQUEST_TOTAL_LENGTH, 0);
+      if (!sent) {
+        throw std::runtime_error("WinHttpSendRequest failed (error code " + std::to_string(GetLastError()) + ")");
+      }
+
+      connected_ = true;
+      lastConnectTime_ = std::chrono::steady_clock::now();
+      activeUploads_++;
     }
 
-    WinHttpSetTimeouts(hSession_, 10000, 10000, 30000, 30000);
-
-    hConnect_ = WinHttpConnect(hSession_, addrInfo.host.c_str(), addrInfo.port, 0);
-    if (!hConnect_) {
-      throw std::runtime_error("WinHttpConnect failed (error code " + std::to_string(GetLastError()) + ")");
-    }
-
-    DWORD flags = addrInfo.useHttps ? WINHTTP_FLAG_SECURE : 0;
-    std::wstring path = addrInfo.path.empty() ? L"/api/upload/stream" : addrInfo.path;
-    hRequest_ = WinHttpOpenRequest(hConnect_, L"POST", path.c_str(), NULL, WINHTTP_NO_REFERER,
-                                   WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!hRequest_) {
-      throw std::runtime_error("WinHttpOpenRequest failed (error code " + std::to_string(GetLastError()) + ")");
-    }
-
-    // Add headers for Transfer-Encoding: chunked
-    std::wstring headers = L"Content-Type: text/csv\r\nTransfer-Encoding: chunked\r\n";
-    if (!apiKey_.empty()) {
-      headers += L"X-API-Key: " + Utf8ToWide(apiKey_) + L"\r\n";
-    }
-
-    if (!WinHttpAddRequestHeaders(hRequest_, headers.c_str(), static_cast<DWORD>(-1),
-                                 WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE)) {
-      throw std::runtime_error("WinHttpAddRequestHeaders failed (error code " + std::to_string(GetLastError()) + ")");
-    }
-
-    // Send Request with WINHTTP_IGNORE_REQUEST_TOTAL_LENGTH
-    bool sent = WinHttpSendRequest(hRequest_, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                   WINHTTP_NO_REQUEST_DATA, 0, WINHTTP_IGNORE_REQUEST_TOTAL_LENGTH, 0);
-    if (!sent) {
-      throw std::runtime_error("WinHttpSendRequest failed (error code " + std::to_string(GetLastError()) + ")");
-    }
-
-    connected_ = true;
-    lastConnectTime_ = std::chrono::steady_clock::now();
-    activeUploads_++;
     logger_.Write("HttpSink - Connected to " + serverAddress_);
+
+    // Stream initial BRT1 Magic and Metadata JSON chunks
+    WriteChunk(encoder_.EncodeMagicChunk());
+    WriteChunk(encoder_.EncodeMetadataChunk(metadata_));
+
     return true;
   } catch (const std::exception& e) {
     logger_.Write("HttpSink - Connection to " + serverAddress_ + " failed: " + e.what());

@@ -305,38 +305,26 @@ int main(int argc, char* argv[]) {
     }
   });
 
-  PluginConfig config;
-  try {
-    if (std::filesystem::exists(configPath)) {
+  // Defaults are built in exactly one place. Every failure path *assigns* them
+  // (never appends), so a partially populated config can't end up with duplicate sinks.
+  PluginConfig config = MakeDefaultPluginConfig(g_telemetryDirPath);
+  std::error_code configExistsEc;
+  if (std::filesystem::exists(configPath, configExistsEc)) {
+    try {
       config = LoadPluginConfig(configPath);
       logger.Write("Loaded configuration from: " + WideToUtf8(configPath));
-    } else {
-      logger.Write("Configuration file not found, creating default: " + WideToUtf8(configPath));
-      config.simulator = "auto";
-      config.league = "auto";
-      SinkConfig fileSink;
-      fileSink.type = "file";
-      fileSink.path = WideToUtf8(g_telemetryDirPath);
-      fileSink.enabled = true;
-      config.sinks.push_back(fileSink);
-
-      SinkConfig httpSink;
-      httpSink.type = "http";
-      httpSink.serverAddress = "https://brbrdb.brbrkitten.com";
-      httpSink.enabled = false;
-      config.sinks.push_back(httpSink);
-
-      SavePluginConfig(configPath, config);
+    } catch (const std::exception& e) {
+      logger.Write(std::string("Error reading config: ") + e.what() + " - Falling back to default configuration");
+      config = MakeDefaultPluginConfig(g_telemetryDirPath);
     }
-  } catch (const std::exception& e) {
-    logger.Write(std::string("Error reading config: ") + e.what() + " - Falling back to default file sink");
-    config.simulator = "auto";
-    config.league = "auto";
-    SinkConfig fileSink;
-    fileSink.type = "file";
-    fileSink.path = WideToUtf8(g_telemetryDirPath);
-    fileSink.enabled = true;
-    config.sinks.push_back(fileSink);
+  } else {
+    logger.Write("Configuration file not found, creating default: " + WideToUtf8(configPath));
+    try {
+      SavePluginConfig(configPath, config);
+    } catch (const std::exception& e) {
+      // Not fatal: keep running with the in-memory defaults.
+      logger.Write(std::string("Failed to write default configuration: ") + e.what());
+    }
   }
 
   // CLI overrides
