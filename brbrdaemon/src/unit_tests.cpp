@@ -310,7 +310,7 @@ void TestTelemetryCollectorWithMockSim() {
       TEST_ASSERT(content.find("Game version,0.1.0") != std::string::npos, "CSV must contain Game version");
       TEST_ASSERT(content.find("Track Origin Latitude,45.61389000") != std::string::npos, "CSV must contain Track Origin Latitude for Monza");
       TEST_ASSERT(content.find("Track Origin Longitude,9.28624000") != std::string::npos, "CSV must contain Track Origin Longitude for Monza");
-      TEST_ASSERT(content.find("Track Origin Heading,") != std::string::npos, "CSV must contain Track Origin Heading");
+      TEST_ASSERT(content.find("Track Origin Heading,") == std::string::npos, "CSV must NOT contain Track Origin Heading");
       TEST_ASSERT(content.find("\nOrigin Heading,") == std::string::npos, "CSV must NOT contain standalone Origin Heading");
       TEST_ASSERT(content.find("\nOrigin Latitude,") == std::string::npos, "CSV must NOT contain standalone Origin Latitude");
       break;

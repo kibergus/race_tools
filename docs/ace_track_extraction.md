@@ -124,12 +124,8 @@ The C++ companion daemon [`BrBrDbTelemetryAce`](file:///c:/code/race_tools/ace_p
 ```csv
 Track name,Monza
 Track configuration,GP Time Attack
-Origin Latitude,45.61389000
-Origin Longitude,9.28624000
 Track Origin Latitude,45.61389000
 Track Origin Longitude,9.28624000
-Origin Heading,0.000000
-Track Origin Heading,0.000000
 Date,2026-10-22
 Time,07:38:08
 Driver name,Katia Guseinova

@@ -533,7 +533,6 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
     ss << "Track Origin Latitude," << std::setprecision(8) << origin.latitude << "\n";
     ss << "Track Origin Longitude," << std::setprecision(8) << origin.longitude << "\n";
   }
-  ss << "Track Origin Heading," << std::setprecision(6) << physics.heading << "\n";
   ss << "Date," << dateBuf << "\n";
   ss << "Time," << timeBuf << "\n";
   ss << "Driver name," << EscapeCsvMetadata(driverName) << "\n";
