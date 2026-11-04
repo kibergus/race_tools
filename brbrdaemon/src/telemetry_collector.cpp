@@ -454,7 +454,7 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
   std::string trackConfig = Trim(statics.trackConfiguration);
   std::string fullTrackName = trackName;
   if (!trackConfig.empty() && trackName.find(trackConfig) == std::string::npos) {
-    fullTrackName = trackName.empty() ? trackConfig : (trackName + "_" + trackConfig);
+    fullTrackName = trackName.empty() ? trackConfig : (trackName + " " + trackConfig);
   }
 
   // Participant tag for file naming

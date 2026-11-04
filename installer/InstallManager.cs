@@ -1235,7 +1235,7 @@ namespace BrBrDbTelemetry
                     {
                         if (!meta.Track.ToLowerInvariant().Contains(trackConfig.ToLowerInvariant()))
                         {
-                            meta.Track = meta.Track + "_" + trackConfig;
+                            meta.Track = meta.Track + " " + trackConfig;
                         }
                     }
                 }

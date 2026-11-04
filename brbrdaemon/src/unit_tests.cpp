@@ -508,8 +508,8 @@ void TestTelemetryCollectorTrackConfiguration() {
 
   SPageFileStaticEvo stat{};
   strcpy_s(stat.sm_version, "1.0");
-  strcpy_s(stat.track, "fuji");
-  strcpy_s(stat.track_configuration, "gp_circuit");
+  strcpy_s(stat.track, "Fuji Speedway");
+  strcpy_s(stat.track_configuration, "GP Short");
   strcpy_s(stat.session_name, "Practice");
   strcpy_s(stat.ac_evo_version, "0.1.0");
   mock.WriteStatic(stat);
@@ -541,8 +541,8 @@ void TestTelemetryCollectorTrackConfiguration() {
       foundFujiCsv = true;
       std::ifstream f(entry.path());
       std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-      TEST_ASSERT(content.find("Track name,fuji_gp_circuit") != std::string::npos, "CSV must contain Track name,fuji_gp_circuit");
-      TEST_ASSERT(content.find("Track configuration,gp_circuit") != std::string::npos, "CSV must contain Track configuration,gp_circuit");
+      TEST_ASSERT(content.find("Track name,Fuji Speedway GP Short") != std::string::npos, "CSV must contain Track name,Fuji Speedway GP Short");
+      TEST_ASSERT(content.find("Track configuration,GP Short") != std::string::npos, "CSV must contain Track configuration,GP Short");
       break;
     }
   }
