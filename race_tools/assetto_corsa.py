@@ -52,26 +52,27 @@ TRACK_ORIGINS: dict[str, AssettoCorsaTrackOrigin] = {
         track_data.Correction(north_m=6052.0, east_m=-2670.0, angle_deg=0.0)),
     'oulton_park': AssettoCorsaTrackOrigin(
         53.177200, -2.613600,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=-48.50, east_m=-200.0, angle_deg=2.53)),
     'paul_ricard': AssettoCorsaTrackOrigin(
         43.250600, 5.791700,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=-1377.0, east_m=-1673.0, angle_deg=-1.91)),
     'red_bull_ring': AssettoCorsaTrackOrigin(
         47.219700, 14.764700,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=353.50, east_m=-207.20, angle_deg=-1.10)),
     'road_atlanta': AssettoCorsaTrackOrigin(
         34.148100, -83.817800,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=-554.70, east_m=319.90, angle_deg=1.57)),
     'sebring': AssettoCorsaTrackOrigin(
         27.454700, -81.348300,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=-349.20, east_m=-381.0, angle_deg=0.18)),
     'suzuka': AssettoCorsaTrackOrigin(
         34.843100, 136.541000,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=132.80, east_m=-652.0, angle_deg=-19.42)),
     'watkins_glen': AssettoCorsaTrackOrigin(
         42.336900, -76.927200,
-        track_data.Correction(north_m=0.0, east_m=0.0, angle_deg=0.0)),
+        track_data.Correction(north_m=987.0, east_m=-1260.0, angle_deg=1.38)),
 }
+TRACK_ORIGINS['redbull_ring'] = TRACK_ORIGINS['red_bull_ring']
 
 
 def get_track_origin(track_name: str | None) -> AssettoCorsaTrackOrigin:

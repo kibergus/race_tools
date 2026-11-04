@@ -98,7 +98,7 @@ def resolve_geojson_by_alias(track_name: str, search_dirs: list[str]) -> str | N
                 with open(json_path, 'r', encoding='utf-8') as fh:
                     data = json.load(fh)
                 aliases = data.get('aliases', [])
-                if any(a.strip().lower() == norm for a in aliases):
+                if any(a.strip().lower() == norm for a in aliases) or data.get('track_name', '').strip().lower() == norm:
                     geojson_path = json_path[:-5] + '.geojson'
                     if os.path.exists(geojson_path):
                         return geojson_path
@@ -629,7 +629,7 @@ def generate_tuner_html(
         const map = L.map('map', {
             zoomControl: true,
             attributionControl: false
-        });
+        }).setView([originLat, originLon], 16);
 
         // Google Satellite Tiles (maxZoom 21)
         L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
@@ -953,7 +953,14 @@ def generate_tuner_html(
         const activePolys = layerItems.map(l => l.polyline);
         if (activePolys.length > 0) {
             const group = L.featureGroup(activePolys);
-            map.fitBounds(group.getBounds(), { padding: [25, 25] });
+            const bounds = group.getBounds();
+            if (bounds.isValid()) {
+                map.fitBounds(bounds, { padding: [25, 25] });
+            } else {
+                map.setView([originLat, originLon], 16);
+            }
+        } else {
+            map.setView([originLat, originLon], 16);
         }
     </script>
 </body>

@@ -30,51 +30,185 @@ KNOWN_TRACK_METADATA = {
     'monza': {
         'track_name': 'Monza',
         'timezone': 'Europe/Rome',
-        'aliases': ['Autodromo Nazionale Monza'],
         'sector_splits_ratio': [0.275, 0.671]
     },
     'imola': {
         'track_name': 'Imola',
         'timezone': 'Europe/Rome',
-        'aliases': ['Autodromo Internazionale Enzo e Dino Ferrari'],
         'sector_splits_ratio': [0.333, 0.666]
     },
     'spa': {
         'track_name': 'Spa-Francorchamps',
         'timezone': 'Europe/Brussels',
-        'aliases': ['Circuit de Spa-Francorchamps'],
         'sector_splits_ratio': [0.333, 0.666]
     },
     'brands_hatch': {
         'track_name': 'Brands Hatch',
         'timezone': 'Europe/London',
-        'aliases': ['Brands Hatch Circuit'],
         'sector_splits_ratio': [0.333, 0.666]
     },
     'cota': {
         'track_name': 'Circuit of the Americas',
         'timezone': 'America/Chicago',
-        'aliases': ['COTA', 'Austin'],
         'sector_splits_ratio': [0.333, 0.666]
     },
     'donington': {
         'track_name': 'Donington Park',
         'timezone': 'Europe/London',
-        'aliases': ['Donington'],
         'sector_splits_ratio': [0.333, 0.666]
     },
     'fuji': {
         'track_name': 'Fuji Speedway',
         'timezone': 'Asia/Tokyo',
-        'aliases': ['Fuji'],
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'kyalami': {
+        'track_name': 'Kyalami',
+        'timezone': 'Africa/Johannesburg',
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'laguna_seca': {
+        'track_name': 'Laguna Seca',
+        'timezone': 'America/Los_Angeles',
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'mount_panorama': {
+        'track_name': 'Mount Panorama',
+        'timezone': 'Australia/Sydney',
         'sector_splits_ratio': [0.333, 0.666]
     },
     'nurburgring': {
         'track_name': 'Nürburgring',
         'timezone': 'Europe/Berlin',
-        'aliases': ['Nurburgring', 'Nuerburgring'],
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'oulton_park': {
+        'track_name': 'Oulton Park',
+        'timezone': 'Europe/London',
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'paul_ricard': {
+        'track_name': 'Paul Ricard',
+        'timezone': 'Europe/Paris',
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'red_bull_ring': {
+        'track_name': 'Red Bull Ring',
+        'timezone': 'Europe/Vienna',
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'road_atlanta': {
+        'track_name': 'Road Atlanta',
+        'timezone': 'America/New_York',
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'sebring': {
+        'track_name': 'Sebring International Raceway',
+        'timezone': 'America/New_York',
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'suzuka': {
+        'track_name': 'Suzuka',
+        'timezone': 'Asia/Tokyo',
+        'sector_splits_ratio': [0.333, 0.666]
+    },
+    'watkins_glen': {
+        'track_name': 'Watkins Glen International',
+        'timezone': 'America/New_York',
         'sector_splits_ratio': [0.333, 0.666]
     }
+}
+KNOWN_TRACK_METADATA['redbull_ring'] = KNOWN_TRACK_METADATA['red_bull_ring']
+
+# Mapping of track slug to known internal layout slug -> Assetto Corsa Evo display configuration name
+KNOWN_ACE_LAYOUTS = {
+    'fuji': {
+        'gp_circuit': 'GP',
+        'gp_circuit_shortcut': 'GP Short',
+        'gp': 'GP',
+        'gp_short': 'GP Short',
+    },
+    'brands_hatch': {
+        'gp': 'GP',
+        'indy': 'Indy',
+    },
+    'cota': {
+        'gp': 'GP',
+        'national': 'National',
+        'club': 'Club',
+    },
+    'donington': {
+        'grand_prix': 'GP',
+        'gp': 'GP',
+        'national': 'National',
+    },
+    'imola': {
+        'imola': 'GP',
+        'gp': 'GP',
+    },
+    'kyalami': {
+        'gp': 'GP',
+    },
+    'laguna_seca': {
+        'laguna_seca': 'GP',
+        'gp': 'GP',
+    },
+    'monza': {
+        'gp': 'GP',
+    },
+    'mount_panorama': {
+        'track_layout': 'GP',
+        'gp': 'GP',
+    },
+    'nurburgring': {
+        '24h': '24h',
+        'gp_strecke': 'GP Strecke',
+        'nordschleife': 'Nordschleife',
+        'sprint': 'Sprint',
+        'touristenfahrten': 'Touristenfahrten',
+        'nordschleife_touristenfahrten': 'Touristenfahrten',
+        'nordschleife_btg': 'Touristenfahrten',
+        'mullenbachschleife': 'Mullenbachschleife',
+        'oldtimer': 'Oldtimer',
+    },
+    'oulton_park': {
+        'international': 'International',
+        'fosters': 'Fosters',
+    },
+    'paul_ricard': {
+        '1a_v2': 'Layout 1A-v2',
+        '1c_v2': 'Layout 1C-v2',
+        '3a': 'Layout 3A',
+        '3c': 'Layout 3C',
+    },
+    'red_bull_ring': {
+        'gp': 'GP',
+        'national': 'National',
+    },
+    'redbull_ring': {
+        'gp': 'GP',
+        'national': 'National',
+    },
+    'road_atlanta': {
+        'gp': 'GP',
+    },
+    'sebring': {
+        'gp': 'GP',
+    },
+    'spa': {
+        'gp': 'GP',
+    },
+    'suzuka': {
+        'gp': 'GP',
+        'east': 'East',
+        'west': 'West',
+    },
+    'watkins_glen': {
+        'gp': 'GP',
+        'gp_inner_loop': 'GP Inner Loop',
+        'short': 'Short',
+        'short_inner_loop': 'Short Inner Loop',
+    },
 }
 
 
@@ -439,11 +573,34 @@ def extract_ai_spline_boundaries(
     return centerline_dicts, center_coords, left_coords, right_coords, lap_length
 
 
+def resolve_kspkg_track_slug(reader: ACEPackageReader, slug: str) -> str:
+    """Resolves track slug to the actual folder name in content.kspkg."""
+    slug_norm = slug.lower().strip()
+    if any(k.startswith(f"content\\tracks\\{slug_norm}\\") for k in reader.file_table):
+        return slug_norm
+
+    # Collect distinct track directories in kspkg
+    kspkg_tracks = set()
+    for k in reader.file_table:
+        if k.startswith("content\\tracks\\"):
+            parts = k.split("\\")
+            if len(parts) > 2:
+                kspkg_tracks.add(parts[2])
+
+    slug_stripped = slug_norm.replace('_', '').replace('-', '')
+    for t in kspkg_tracks:
+        if t.replace('_', '').replace('-', '') == slug_stripped:
+            return t
+
+    return slug_norm
+
+
 def find_available_layouts(reader: ACEPackageReader, slug: str) -> List[str]:
     """Finds all layout variant names available for a given track in the package."""
+    pkg_slug = resolve_kspkg_track_slug(reader, slug)
     layouts = []
-    prefix1 = f"content\\tracks\\{slug}\\layouts\\"
-    prefix2 = f"content\\tracks\\{slug}\\content\\layouts\\"
+    prefix1 = f"content\\tracks\\{pkg_slug}\\layouts\\"
+    prefix2 = f"content\\tracks\\{pkg_slug}\\content\\layouts\\"
     for k in reader.file_table:
         if k.endswith(".ideal_line.aisplinedata"):
             if k.startswith(prefix1) or k.startswith(prefix2):
@@ -461,38 +618,170 @@ def find_layout_spline_file(reader: ACEPackageReader, slug: str, layout: Optiona
     Finds the ideal_line.aisplinedata file for a track and optional layout variant.
     Prefers high-density content\\tracks\\<slug>\\layouts\\ over content\\layouts\\.
     """
+    pkg_slug = resolve_kspkg_track_slug(reader, slug)
     if layout:
         targets = [
-            f"content\\tracks\\{slug}\\layouts\\layout_{layout}.ideal_line.aisplinedata",
-            f"content\\tracks\\{slug}\\layouts\\{layout}.ideal_line.aisplinedata",
-            f"content\\tracks\\{slug}\\content\\layouts\\layout_{layout}.ideal_line.aisplinedata",
-            f"content\\tracks\\{slug}\\content\\layouts\\{layout}.ideal_line.aisplinedata",
+            f"content\\tracks\\{pkg_slug}\\layouts\\layout_{layout}.ideal_line.aisplinedata",
+            f"content\\tracks\\{pkg_slug}\\layouts\\{layout}.ideal_line.aisplinedata",
+            f"content\\tracks\\{pkg_slug}\\content\\layouts\\layout_{layout}.ideal_line.aisplinedata",
+            f"content\\tracks\\{pkg_slug}\\content\\layouts\\{layout}.ideal_line.aisplinedata",
         ]
         for t in targets:
             if t in reader.file_table:
                 return t
         for k in reader.file_table:
-            if k.startswith(f"content\\tracks\\{slug}\\") and layout in k and k.endswith(".ideal_line.aisplinedata"):
+            if k.startswith(f"content\\tracks\\{pkg_slug}\\") and layout in k and k.endswith(".ideal_line.aisplinedata"):
                 return k
 
     default_candidates = [
-        f"content\\tracks\\{slug}\\layouts\\layout_gp.ideal_line.aisplinedata",
-        f"content\\tracks\\{slug}\\layouts\\layout_gp_strecke.ideal_line.aisplinedata",
-        f"content\\tracks\\{slug}\\layouts\\layout_grand_prix.ideal_line.aisplinedata",
-        f"content\\tracks\\{slug}\\layouts\\layout_{slug}.ideal_line.aisplinedata",
-        f"content\\tracks\\{slug}\\layouts\\track_layout.ideal_line.aisplinedata",
+        f"content\\tracks\\{pkg_slug}\\layouts\\layout_gp.ideal_line.aisplinedata",
+        f"content\\tracks\\{pkg_slug}\\layouts\\layout_gp_strecke.ideal_line.aisplinedata",
+        f"content\\tracks\\{pkg_slug}\\layouts\\layout_grand_prix.ideal_line.aisplinedata",
+        f"content\\tracks\\{pkg_slug}\\layouts\\layout_{pkg_slug}.ideal_line.aisplinedata",
+        f"content\\tracks\\{pkg_slug}\\layouts\\layout_{slug}.ideal_line.aisplinedata",
+        f"content\\tracks\\{pkg_slug}\\layouts\\track_layout.ideal_line.aisplinedata",
     ]
     for c in default_candidates:
         if c in reader.file_table:
             return c
 
     for k in sorted(reader.file_table):
-        if k.startswith(f"content\\tracks\\{slug}\\layouts\\") and k.endswith(".ideal_line.aisplinedata"):
+        if k.startswith(f"content\\tracks\\{pkg_slug}\\layouts\\") and k.endswith(".ideal_line.aisplinedata"):
             return k
     for k in sorted(reader.file_table):
-        if k.startswith(f"content\\tracks\\{slug}\\") and k.endswith(".ideal_line.aisplinedata"):
+        if k.startswith(f"content\\tracks\\{pkg_slug}\\") and k.endswith(".ideal_line.aisplinedata"):
             return k
     return None
+
+
+def get_ace_layout_name(
+    slug: str,
+    layout: Optional[str],
+    reader: Optional[ACEPackageReader] = None
+) -> Optional[str]:
+    """
+    Resolves the layout configuration name as it appears in Assetto Corsa Evo
+    (e.g. 'GP Short', 'GP', 'Indy', 'National').
+    """
+    if not layout:
+        return None
+
+    slug_norm = slug.lower().strip()
+    layout_norm = layout.lower().strip()
+
+    if slug_norm in KNOWN_ACE_LAYOUTS and layout_norm in KNOWN_ACE_LAYOUTS[slug_norm]:
+        return KNOWN_ACE_LAYOUTS[slug_norm][layout_norm]
+
+    if reader:
+        pkg_slug = resolve_kspkg_track_slug(reader, slug_norm)
+        prefix = f"content\\tracks\\{pkg_slug}\\dynamic_track\\"
+        candidates = []
+        for k in reader.file_table:
+            if k.startswith(prefix) and k.endswith(".dynamictrackpresetcompressed"):
+                preset = k[len(prefix):-len(".dynamictrackpresetcompressed")].strip()
+                candidates.append(preset)
+
+        layout_words = set(re.findall(r'[a-zA-Z0-9]+', layout_norm))
+        layout_words.discard('circuit')
+        layout_words.discard('layout')
+        if 'shortcut' in layout_words:
+            layout_words.remove('shortcut')
+            layout_words.add('short')
+
+        best_match = None
+        best_score = 0
+        for cand in candidates:
+            cand_words = set(re.findall(r'[a-zA-Z0-9]+', cand.lower()))
+            overlap = len(layout_words & cand_words)
+            if overlap > best_score:
+                best_score = overlap
+                best_match = cand
+
+        if best_match:
+            words = best_match.split()
+            formatted = []
+            for w in words:
+                if w.lower() in ('gp', '24h'):
+                    formatted.append(w.upper())
+                else:
+                    formatted.append(w.capitalize())
+            return " ".join(formatted)
+
+    words = layout.replace('_', ' ').split()
+    formatted = []
+    for w in words:
+        if w.lower() in ('gp', '24h'):
+            formatted.append(w.upper())
+        elif w.lower() == 'shortcut':
+            formatted.append('Short')
+        elif w.lower() != 'circuit':
+            formatted.append(w.capitalize())
+    return " ".join(formatted) if formatted else layout.replace('_', ' ').title()
+
+
+def get_ace_layout_name(
+    slug: str,
+    layout: Optional[str],
+    reader: Optional[ACEPackageReader] = None
+) -> Optional[str]:
+    """
+    Resolves the layout configuration name as it appears in Assetto Corsa Evo
+    (e.g. 'GP Short', 'GP', 'Indy', 'National').
+    """
+    if not layout:
+        return None
+
+    slug_norm = slug.lower().strip()
+    layout_norm = layout.lower().strip()
+
+    if slug_norm in KNOWN_ACE_LAYOUTS and layout_norm in KNOWN_ACE_LAYOUTS[slug_norm]:
+        return KNOWN_ACE_LAYOUTS[slug_norm][layout_norm]
+
+    if reader:
+        pkg_slug = resolve_kspkg_track_slug(reader, slug_norm)
+        prefix = f"content\\tracks\\{pkg_slug}\\dynamic_track\\"
+        candidates = []
+        for k in reader.file_table:
+            if k.startswith(prefix) and k.endswith(".dynamictrackpresetcompressed"):
+                preset = k[len(prefix):-len(".dynamictrackpresetcompressed")].strip()
+                candidates.append(preset)
+
+        layout_words = set(re.findall(r'[a-zA-Z0-9]+', layout_norm))
+        layout_words.discard('circuit')
+        layout_words.discard('layout')
+        if 'shortcut' in layout_words:
+            layout_words.remove('shortcut')
+            layout_words.add('short')
+
+        best_match = None
+        best_score = 0
+        for cand in candidates:
+            cand_words = set(re.findall(r'[a-zA-Z0-9]+', cand.lower()))
+            overlap = len(layout_words & cand_words)
+            if overlap > best_score:
+                best_score = overlap
+                best_match = cand
+
+        if best_match:
+            words = best_match.split()
+            formatted = []
+            for w in words:
+                if w.lower() in ('gp', '24h'):
+                    formatted.append(w.upper())
+                else:
+                    formatted.append(w.capitalize())
+            return " ".join(formatted)
+
+    words = layout.replace('_', ' ').split()
+    formatted = []
+    for w in words:
+        if w.lower() in ('gp', '24h'):
+            formatted.append(w.upper())
+        elif w.lower() == 'shortcut':
+            formatted.append('Short')
+        elif w.lower() != 'circuit':
+            formatted.append(w.capitalize())
+    return " ".join(formatted) if formatted else layout.replace('_', ' ').title()
 
 
 def extract_track(
@@ -526,10 +815,10 @@ def extract_track(
     meta = KNOWN_TRACK_METADATA.get(slug, {
         'track_name': track_slug.capitalize(),
         'timezone': 'UTC',
-        'aliases': [],
         'sector_splits_ratio': [0.333, 0.666]
     })
     origin_obj = assetto_corsa.get_track_origin(slug)
+    pkg_slug = resolve_kspkg_track_slug(reader, slug)
 
     # 1. Primary Source: AI Spline Corridor (high-density legal road limits)
     ai_spline_file = find_layout_spline_file(reader, slug, layout)
@@ -570,7 +859,7 @@ def extract_track(
         # Painted white lines
         whiteline_files = sorted([
             k for k in reader.file_table
-            if k.startswith(f'content\\tracks\\{slug}\\') and 'whiteline' in k and k.endswith('.mesh')
+            if k.startswith(f'content\\tracks\\{pkg_slug}\\') and 'whiteline' in k and k.endswith('.mesh')
         ])
         for f in whiteline_files:
             base = os.path.basename(f)
@@ -597,7 +886,7 @@ def extract_track(
         tarmac_range = tarmac_meshes if tarmac_meshes else "1-5"
         all_tarmac_files = sorted([
             k for k in reader.file_table
-            if k.startswith(f'content\\tracks\\{slug}\\physics\\') and 'tarmac' in k and k.endswith('.mesh')
+            if k.startswith(f'content\\tracks\\{pkg_slug}\\physics\\') and 'tarmac' in k and k.endswith('.mesh')
         ], key=lambda x: int(re.search(r'\d+', os.path.basename(x)).group()) if re.search(r'\d+', os.path.basename(x)) else 0)
 
         target_indices = set()
@@ -655,11 +944,17 @@ def extract_track(
         'lat': origin_obj.lat,
         'lon': origin_obj.lon,
     }
-    aliases = list(meta.get('aliases', []))
-    if layout:
-        for alias_candidate in [file_slug, f"{meta['track_name']} {layout}", f"{slug} {layout}", layout]:
-            if alias_candidate not in aliases:
-                aliases.append(alias_candidate)
+    # Alias consists of the track name and layout name as they are in Assetto Corsa Evo.
+    # If the alias matches track_name, do not add it.
+    ace_layout = get_ace_layout_name(slug, layout, reader)
+    if ace_layout:
+        ace_alias = f"{meta['track_name']} {ace_layout}".strip()
+    else:
+        ace_alias = meta['track_name'].strip()
+
+    aliases = []
+    if ace_alias and ace_alias.strip().lower() != track_title.strip().lower():
+        aliases.append(ace_alias)
 
     track_json_data = {
         'track_name': track_title,
