@@ -266,7 +266,10 @@ void HttpSink::operator()(const Line& line) {
     if (now - lastConnectTime_ >= maxConnectionDuration_) {
       logger_.Write("HttpSink - Proactively rolling over connection (active for " +
                     std::to_string(std::chrono::duration_cast<std::chrono::seconds>(now - lastConnectTime_).count()) + "s)");
-      Finalize();
+      if (Finalize()) {
+        // Successful rollover acknowledged: data sent up to this point does not need to be replayed!
+        buffer_.clear();
+      }
     }
   }
 

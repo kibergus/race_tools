@@ -104,7 +104,7 @@ struct HttpSinkOptions {
   std::chrono::seconds bufferDuration = std::chrono::minutes(30);
   std::chrono::seconds backoffWindow = std::chrono::minutes(10);
   int maxBackoffAttempts = 8;
-  std::chrono::seconds maxConnectionDuration = std::chrono::minutes(2);
+  std::chrono::seconds maxConnectionDuration = std::chrono::seconds(60);
   int maxEndSessionRetries = 10;
 };
 

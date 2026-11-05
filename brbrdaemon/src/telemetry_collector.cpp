@@ -494,7 +494,7 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
                                      std::chrono::minutes(sinkConf.bufferDurationMinutes),
                                      std::chrono::minutes(10),
                                      8,
-                                     std::chrono::minutes(2),
+                                     std::chrono::seconds(60),
                                      sinkConf.maxRetries),
           sessionQueue_->reader()));
     }

@@ -490,7 +490,7 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
                                          std::chrono::minutes(sinkConf.bufferDurationMinutes),
                                          std::chrono::minutes(10),
                                          8,
-                                         std::chrono::minutes(2),
+                                         std::chrono::seconds(60),
                                          sinkConf.maxRetries),
               session->csvQueue.reader()));
         }
