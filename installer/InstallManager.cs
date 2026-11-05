@@ -1156,7 +1156,9 @@ namespace BrBrDbTelemetry
             try
             {
                 DirectoryInfo dir = new DirectoryInfo(directoryPath);
-                FileInfo[] files = dir.GetFiles("*.csv");
+                var csvFiles = dir.GetFiles("*.csv");
+                var brt1Files = dir.GetFiles("*.brt1");
+                FileInfo[] files = csvFiles.Concat(brt1Files).ToArray();
                 Array.Sort(files, (a, b) => b.LastWriteTime.CompareTo(a.LastWriteTime));
                 return files;
             }
@@ -1188,6 +1190,45 @@ namespace BrBrDbTelemetry
 
             if (file == null || !file.Exists)
                 return meta;
+
+            if (file.Extension.Equals(".brt1", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    using (var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        byte[] magicHdr = new byte[7];
+                        if (fs.Read(magicHdr, 0, 7) == 7 && magicHdr[0] == 4 && magicHdr[1] == 0 && magicHdr[2] == 1 &&
+                            magicHdr[3] == (byte)'B' && magicHdr[4] == (byte)'R' && magicHdr[5] == (byte)'T' && magicHdr[6] == (byte)'1')
+                        {
+                            byte[] chunkHdr = new byte[3];
+                            if (fs.Read(chunkHdr, 0, 3) == 3 && chunkHdr[2] == 0x02)
+                            {
+                                int len = chunkHdr[0] | (chunkHdr[1] << 8);
+                                byte[] jsonBytes = new byte[len];
+                                if (fs.Read(jsonBytes, 0, len) == len)
+                                {
+                                    using (var doc = JsonDocument.Parse(jsonBytes))
+                                    {
+                                        if (doc.RootElement.TryGetProperty("metadata", out var metaProp))
+                                        {
+                                            if (metaProp.TryGetProperty("track_name", out var tp) || metaProp.TryGetProperty("Track name", out tp))
+                                                meta.Track = tp.GetString();
+                                            if (metaProp.TryGetProperty("date", out var dp) || metaProp.TryGetProperty("Date", out dp))
+                                                meta.Date = dp.GetString();
+                                            if (metaProp.TryGetProperty("time", out var tmp) || metaProp.TryGetProperty("Time", out tmp))
+                                                meta.Time = tmp.GetString();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                return meta;
+            }
 
             try
             {
@@ -1297,57 +1338,143 @@ namespace BrBrDbTelemetry
                 return false;
             }
 
-            int maxRetries = 5;
-            bool tryCompressed = true;
-            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            // Prepare payload: convert CSV to BRT1 binary stream or use native BRT1
+            MemoryStream binaryPayload = null;
+            bool isBinary = false;
+            try
             {
-                try
+                if (filePath.EndsWith(".brt1", StringComparison.OrdinalIgnoreCase))
                 {
-                    string endpoint = serverAddress.TrimEnd('/') + "/api/upload/stream";
-                    var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(endpoint);
-                    request.Method = "POST";
-                    request.ContentType = "text/csv";
-                    request.Timeout = 180000; // 3 minutes timeout for telemetry upload
-                    request.SendChunked = true;
-
-                    if (tryCompressed)
-                    {
-                        request.Headers["Content-Encoding"] = "br";
-                    }
-
-                    if (!string.IsNullOrEmpty(apiKey))
-                    {
-                        request.Headers["X-API-Key"] = apiKey;
-                    }
-
+                    binaryPayload = new MemoryStream();
                     using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                    using (Stream reqStream = request.GetRequestStream())
                     {
+                        fs.CopyTo(binaryPayload);
+                    }
+                    binaryPayload.Position = 0;
+                    isBinary = true;
+                }
+                else
+                {
+                    var ms = new MemoryStream();
+                    using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        Brt1Encoder.ConvertCsvToBrt1Stream(fs, ms);
+                    }
+                    ms.Position = 0;
+                    binaryPayload = ms;
+                    isBinary = true;
+                }
+            }
+            catch
+            {
+                // If binary conversion fails, fall back to uploading raw text CSV
+                binaryPayload?.Dispose();
+                binaryPayload = null;
+                isBinary = false;
+            }
+
+            try
+            {
+                int maxRetries = 5;
+                bool tryCompressed = true;
+                for (int attempt = 1; attempt <= maxRetries; attempt++)
+                {
+                    try
+                    {
+                        string endpoint = serverAddress.TrimEnd('/') + "/api/upload/stream";
+                        var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(endpoint);
+                        request.Method = "POST";
+                        request.ContentType = isBinary ? "application/octet-stream" : "text/csv";
+                        request.Timeout = 180000; // 3 minutes timeout for telemetry upload
+                        request.SendChunked = true;
+
                         if (tryCompressed)
                         {
-                            CompressBrotli(fs, reqStream, 4);
+                            request.Headers["Content-Encoding"] = "br";
+                        }
+
+                        if (!string.IsNullOrEmpty(apiKey))
+                        {
+                            request.Headers["X-API-Key"] = apiKey;
+                        }
+
+                        Stream sourceStream = binaryPayload;
+                        FileStream fallbackFs = null;
+                        if (sourceStream != null)
+                        {
+                            sourceStream.Position = 0;
                         }
                         else
                         {
-                            byte[] buffer = new byte[65536];
-                            int bytesRead;
-                            while ((bytesRead = fs.Read(buffer, 0, buffer.Length)) > 0)
+                            fallbackFs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                            sourceStream = fallbackFs;
+                        }
+
+                        try
+                        {
+                            using (Stream reqStream = request.GetRequestStream())
                             {
-                                reqStream.Write(buffer, 0, bytesRead);
+                                if (tryCompressed)
+                                {
+                                    CompressBrotli(sourceStream, reqStream, 4);
+                                }
+                                else
+                                {
+                                    byte[] buffer = new byte[65536];
+                                    int bytesRead;
+                                    while ((bytesRead = sourceStream.Read(buffer, 0, buffer.Length)) > 0)
+                                    {
+                                        reqStream.Write(buffer, 0, bytesRead);
+                                    }
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            fallbackFs?.Dispose();
+                        }
+
+                        using (var response = (System.Net.HttpWebResponse)request.GetResponse())
+                        {
+                            if (response.StatusCode == System.Net.HttpStatusCode.OK)
+                            {
+                                return true;
+                            }
+                            else
+                            {
+                                errorMessage = string.Format("Server returned status code {0} ({1}).", (int)response.StatusCode, response.StatusDescription);
+                                int code = (int)response.StatusCode;
+                                if (tryCompressed && (code == 415 || code == 400 || code == 500))
+                                {
+                                    tryCompressed = false;
+                                    continue;
+                                }
+                                if (code >= 400 && code < 500 && code != 408 && code != 429)
+                                {
+                                    return false; // Non-retryable client error
+                                }
                             }
                         }
                     }
-
-                    using (var response = (System.Net.HttpWebResponse)request.GetResponse())
+                    catch (System.Net.WebException ex)
                     {
-                        if (response.StatusCode == System.Net.HttpStatusCode.OK)
+                        var resp = ex.Response as System.Net.HttpWebResponse;
+                        if (resp != null)
                         {
-                            return true;
-                        }
-                        else
-                        {
-                            errorMessage = string.Format("Server returned status code {0} ({1}).", (int)response.StatusCode, response.StatusDescription);
-                            int code = (int)response.StatusCode;
+                            try
+                            {
+                                using (var reader = new StreamReader(resp.GetResponseStream()))
+                                {
+                                    string respText = reader.ReadToEnd();
+                                    errorMessage = string.Format("Server Error {0}: {1}", (int)resp.StatusCode, respText);
+                                }
+                            }
+                            catch
+                            {
+                                errorMessage = string.Format("Server Error {0}: {1}", (int)resp.StatusCode, resp.StatusDescription);
+                            }
+
+                            int code = (int)resp.StatusCode;
                             if (tryCompressed && (code == 415 || code == 400 || code == 500))
                             {
                                 tryCompressed = false;
@@ -1358,54 +1485,28 @@ namespace BrBrDbTelemetry
                                 return false; // Non-retryable client error
                             }
                         }
-                    }
-                }
-                catch (System.Net.WebException ex)
-                {
-                    var resp = ex.Response as System.Net.HttpWebResponse;
-                    if (resp != null)
-                    {
-                        try
+                        else
                         {
-                            using (var reader = new StreamReader(resp.GetResponseStream()))
-                            {
-                                string respText = reader.ReadToEnd();
-                                errorMessage = string.Format("Server Error {0}: {1}", (int)resp.StatusCode, respText);
-                            }
-                        }
-                        catch
-                        {
-                            errorMessage = string.Format("Server Error {0}: {1}", (int)resp.StatusCode, resp.StatusDescription);
-                        }
-
-                        int code = (int)resp.StatusCode;
-                        if (tryCompressed && (code == 415 || code == 400 || code == 500))
-                        {
-                            tryCompressed = false;
-                            continue;
-                        }
-                        if (code >= 400 && code < 500 && code != 408 && code != 429)
-                        {
-                            return false; // Non-retryable client error
+                            errorMessage = ex.Message;
                         }
                     }
-                    else
+                    catch (Exception ex)
                     {
                         errorMessage = ex.Message;
                     }
-                }
-                catch (Exception ex)
-                {
-                    errorMessage = ex.Message;
+
+                    if (attempt < maxRetries)
+                    {
+                        System.Threading.Thread.Sleep(1000 * Math.Min(1 << attempt, 16));
+                    }
                 }
 
-                if (attempt < maxRetries)
-                {
-                    System.Threading.Thread.Sleep(1000 * Math.Min(1 << attempt, 16));
-                }
+                return false;
             }
-
-            return false;
+            finally
+            {
+                binaryPayload?.Dispose();
+            }
         }
 
         public static bool DeleteSessionFile(string filePath, out string errorMessage)

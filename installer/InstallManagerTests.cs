@@ -50,6 +50,9 @@ namespace BrBrDbTelemetry
             RunTest("TestAcrAndAcConfigPersistence", TestAcrAndAcConfigPersistence);
             RunTest("TestGetInstalledDaemonDetails_Missing", TestGetInstalledDaemonDetails_Missing);
             RunTest("TestDaemonInstallAndUninstallCopiesInstaller", TestDaemonInstallAndUninstallCopiesInstaller);
+            RunTest("TestBrt1Encoder_ConvertCsvToBrt1", TestBrt1Encoder_ConvertCsvToBrt1);
+            RunTest("TestBrt1Encoder_GetSessionMetadata_Brt1", TestBrt1Encoder_GetSessionMetadata_Brt1);
+            RunTest("TestBrt1Encoder_GetSessionFiles_IncludesBrt1", TestBrt1Encoder_GetSessionFiles_IncludesBrt1);
 
             Console.WriteLine("==================================================");
             Console.WriteLine(string.Format("Tests run: {0}, Failed: {1}", testsRun, testsFailed));
@@ -758,6 +761,115 @@ namespace BrBrDbTelemetry
             {
                 DeleteTempDirectory(tempDir);
                 DeleteTempDirectory(mockSourceDir);
+            }
+        }
+
+        static void TestBrt1Encoder_ConvertCsvToBrt1()
+        {
+            string csvContent =
+                "Track name,Rowrah\n" +
+                "Date,2026-10-07\n" +
+                "Time,14:51:21\n" +
+                "Driver name,Kibergus\n" +
+                "Kart number,55\n" +
+                "\n" +
+                "Time,x,z,Speed,Throttle\n" +
+                "2026-10-07T14:51:21.000Z,10.5,20.5,25.0,85.0\n" +
+                "2026-10-07T14:51:21.010Z,10.51,20.52,25.05,85.2\n";
+
+            using (var csvMs = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(csvContent)))
+            using (var brt1Ms = new MemoryStream())
+            {
+                Brt1Encoder.ConvertCsvToBrt1Stream(csvMs, brt1Ms);
+                byte[] bytes = brt1Ms.ToArray();
+
+                Assert(bytes.Length > 20, "BRT1 output should not be empty");
+
+                // 1. Magic chunk: len 4 (0x0004), type 0x01, 'BRT1'
+                Assert(bytes[0] == 4 && bytes[1] == 0 && bytes[2] == 0x01, "First chunk must be Magic chunk (Type 0x01, len 4)");
+                string magicStr = System.Text.Encoding.ASCII.GetString(bytes, 3, 4);
+                Assert(magicStr == "BRT1", "Magic payload must be 'BRT1'");
+
+                // 2. Metadata chunk: type 0x02
+                int offset = 7;
+                int metaLen = bytes[offset] | (bytes[offset + 1] << 8);
+                Assert(bytes[offset + 2] == 0x02, "Second chunk must be MetadataJson chunk (Type 0x02)");
+                string metaJson = System.Text.Encoding.UTF8.GetString(bytes, offset + 3, metaLen);
+                using (var doc = System.Text.Json.JsonDocument.Parse(metaJson))
+                {
+                    Assert(doc.RootElement.GetProperty("metadata").GetProperty("track_name").GetString() == "Rowrah", "Track name must be Rowrah");
+                    Assert(doc.RootElement.GetProperty("metadata").GetProperty("driver_name").GetString() == "Kibergus", "Driver name must be Kibergus");
+                    Assert(doc.RootElement.GetProperty("channels").GetArrayLength() == 5, "Must declare 5 channels");
+                }
+                offset += 3 + metaLen;
+
+                // 3. Baseline chunk: type 0x03, len 5 * 8 = 40 bytes
+                int baseLen = bytes[offset] | (bytes[offset + 1] << 8);
+                Assert(baseLen == 40, "Baseline chunk must be 40 bytes for 5 double channels");
+                Assert(bytes[offset + 2] == 0x03, "Third chunk must be Baseline chunk (Type 0x03)");
+                double firstX = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(new ReadOnlySpan<byte>(bytes, offset + 3 + 8, 8));
+                Assert(Math.Abs(firstX - 10.5) < 1e-4, "First X sample must be 10.5");
+                offset += 3 + baseLen;
+
+                // 4. Delta chunk: type 0x04, len 5 * 2 = 10 bytes
+                int deltaLen = bytes[offset] | (bytes[offset + 1] << 8);
+                Assert(deltaLen == 10, "Delta chunk must be 10 bytes for 5 channels");
+                Assert(bytes[offset + 2] == 0x04, "Fourth chunk must be Delta chunk (Type 0x04)");
+                offset += 3 + deltaLen;
+
+                // 5. EOS chunk: len 0, type 0xFF
+                Assert(bytes[offset] == 0 && bytes[offset + 1] == 0 && bytes[offset + 2] == 0xFF, "Fifth chunk must be EOS chunk (Type 0xFF, len 0)");
+            }
+        }
+
+        static void TestBrt1Encoder_GetSessionMetadata_Brt1()
+        {
+            string tempDir = CreateTempDirectory();
+            try
+            {
+                string csvContent =
+                    "Track name,Silverstone GP\n" +
+                    "Date,2026-11-05\n" +
+                    "Time,21:00:00\n" +
+                    "Driver name,TestDriver\n" +
+                    "\n" +
+                    "Time,Speed\n" +
+                    "2026-11-05T21:00:00.000Z,50.0\n";
+
+                string brt1Path = Path.Combine(tempDir, "test_session.brt1");
+                using (var csvMs = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(csvContent)))
+                using (var fileStream = new FileStream(brt1Path, FileMode.Create, FileAccess.Write))
+                {
+                    Brt1Encoder.ConvertCsvToBrt1Stream(csvMs, fileStream);
+                }
+
+                var meta = InstallManager.GetSessionMetadata(new FileInfo(brt1Path));
+                Assert(meta.Track == "Silverstone GP", "Extracted track should match Silverstone GP");
+                Assert(meta.Date == "2026-11-05", "Extracted date should match 2026-11-05");
+                Assert(meta.Time == "21:00:00", "Extracted time should match 21:00:00");
+            }
+            finally
+            {
+                DeleteTempDirectory(tempDir);
+            }
+        }
+
+        static void TestBrt1Encoder_GetSessionFiles_IncludesBrt1()
+        {
+            string tempDir = CreateTempDirectory();
+            try
+            {
+                string csvFile = Path.Combine(tempDir, "session1.csv");
+                string brt1File = Path.Combine(tempDir, "session2.brt1");
+                File.WriteAllText(csvFile, "Time,x\n0,0\n");
+                File.WriteAllText(brt1File, "mock brt1");
+
+                var files = InstallManager.GetSessionFiles(tempDir);
+                Assert(files.Length == 2, "GetSessionFiles should discover both .csv and .brt1 files");
+            }
+            finally
+            {
+                DeleteTempDirectory(tempDir);
             }
         }
     }
