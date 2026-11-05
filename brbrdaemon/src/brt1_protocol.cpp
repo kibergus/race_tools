@@ -189,6 +189,22 @@ std::string Brt1StreamEncoder::EncodeMetadataChunk(const Brt1SessionMetadata& me
     meta["kart_number"] = metadata.kartNumber;
     meta["Kart number"] = metadata.kartNumber;
   }
+  if (!metadata.trackConfiguration.empty()) {
+    meta["track_configuration"] = metadata.trackConfiguration;
+    meta["Track configuration"] = metadata.trackConfiguration;
+  }
+  if (!metadata.gameVersion.empty()) {
+    meta["game_version"] = metadata.gameVersion;
+    meta["Game version"] = metadata.gameVersion;
+  }
+  if (!metadata.trackOriginLat.empty()) {
+    meta["track_origin_lat"] = metadata.trackOriginLat;
+    meta["Track Origin Latitude"] = metadata.trackOriginLat;
+  }
+  if (!metadata.trackOriginLon.empty()) {
+    meta["track_origin_lon"] = metadata.trackOriginLon;
+    meta["Track Origin Longitude"] = metadata.trackOriginLon;
+  }
   j["metadata"] = meta;
 
   nlohmann::json channelsArr = nlohmann::json::array();
@@ -360,6 +376,10 @@ Brt1StreamDecoder::StepResult Brt1StreamDecoder::Step(std::unordered_map<std::st
         metadata_.className = m.value("class_name", m.value("Class", m.value("class", "")));
         metadata_.sessionName = m.value("session_name", m.value("Session", m.value("session", "")));
         metadata_.kartNumber = m.value("kart_number", m.value("Kart number", ""));
+        metadata_.trackConfiguration = m.value("track_configuration", m.value("Track configuration", ""));
+        metadata_.gameVersion = m.value("game_version", m.value("Game version", ""));
+        metadata_.trackOriginLat = m.value("track_origin_lat", m.value("Track Origin Latitude", ""));
+        metadata_.trackOriginLon = m.value("track_origin_lon", m.value("Track Origin Longitude", ""));
       }
       channels_.clear();
       if (j.contains("channels") && j["channels"].is_array()) {

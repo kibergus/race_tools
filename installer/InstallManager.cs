@@ -1156,9 +1156,18 @@ namespace BrBrDbTelemetry
             try
             {
                 DirectoryInfo dir = new DirectoryInfo(directoryPath);
-                var csvFiles = dir.GetFiles("*.csv");
-                var brt1Files = dir.GetFiles("*.brt1");
-                FileInfo[] files = csvFiles.Concat(brt1Files).ToArray();
+                var allFiles = dir.GetFiles("*.*");
+                var sessionFiles = new List<FileInfo>();
+                foreach (var f in allFiles)
+                {
+                    if (f.Name.EndsWith(".brt1.br", StringComparison.OrdinalIgnoreCase) ||
+                        f.Name.EndsWith(".brt1", StringComparison.OrdinalIgnoreCase) ||
+                        f.Name.EndsWith(".csv", StringComparison.OrdinalIgnoreCase))
+                    {
+                        sessionFiles.Add(f);
+                    }
+                }
+                var files = sessionFiles.ToArray();
                 Array.Sort(files, (a, b) => b.LastWriteTime.CompareTo(a.LastWriteTime));
                 return files;
             }
@@ -1166,6 +1175,18 @@ namespace BrBrDbTelemetry
             {
                 return new FileInfo[0];
             }
+        }
+
+        private static bool ReadExact(Stream stream, byte[] buffer, int count)
+        {
+            int offset = 0;
+            while (offset < count)
+            {
+                int read = stream.Read(buffer, offset, count - offset);
+                if (read <= 0) return false;
+                offset += read;
+            }
+            return true;
         }
 
         public class SessionMetadata
@@ -1190,6 +1211,46 @@ namespace BrBrDbTelemetry
 
             if (file == null || !file.Exists)
                 return meta;
+
+            if (file.Name.EndsWith(".brt1.br", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    using (var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (var decompressor = new System.IO.Compression.BrotliStream(fs, System.IO.Compression.CompressionMode.Decompress))
+                    {
+                        byte[] magicHdr = new byte[7];
+                        if (ReadExact(decompressor, magicHdr, 7) && magicHdr[0] == 4 && magicHdr[1] == 0 && magicHdr[2] == 1 &&
+                            magicHdr[3] == (byte)'B' && magicHdr[4] == (byte)'R' && magicHdr[5] == (byte)'T' && magicHdr[6] == (byte)'1')
+                        {
+                            byte[] chunkHdr = new byte[3];
+                            if (ReadExact(decompressor, chunkHdr, 3) && chunkHdr[2] == 0x02)
+                            {
+                                int len = chunkHdr[0] | (chunkHdr[1] << 8);
+                                byte[] jsonBytes = new byte[len];
+                                if (ReadExact(decompressor, jsonBytes, len))
+                                {
+                                    using (var doc = JsonDocument.Parse(jsonBytes))
+                                    {
+                                        if (doc.RootElement.TryGetProperty("metadata", out var metaProp))
+                                        {
+                                            if (metaProp.TryGetProperty("track_name", out var tp) || metaProp.TryGetProperty("Track name", out tp))
+                                                meta.Track = tp.GetString();
+                                            if (metaProp.TryGetProperty("date", out var dp) || metaProp.TryGetProperty("Date", out dp))
+                                                meta.Date = dp.GetString();
+                                            if (metaProp.TryGetProperty("time", out var tmp) || metaProp.TryGetProperty("Time", out tmp))
+                                                meta.Time = tmp.GetString();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                return meta;
+            }
 
             if (file.Extension.Equals(".brt1", StringComparison.OrdinalIgnoreCase))
             {
@@ -1338,39 +1399,48 @@ namespace BrBrDbTelemetry
                 return false;
             }
 
-            // Prepare payload: convert CSV to BRT1 binary stream or use native BRT1
+            // Prepare payload:
+            // 1. If *.brt1.br: file is already BRT1 and already Brotli-compressed!
+            //    Stream directly to server with application/octet-stream and Content-Encoding: br.
+            // 2. If *.brt1: stream binary directly, with Brotli compression applied on the fly.
+            // 3. If *.csv: transcode to BRT1 and compress with Brotli on the fly.
+            bool isAlreadyBrotliBrt1 = filePath.EndsWith(".brt1.br", StringComparison.OrdinalIgnoreCase);
             MemoryStream binaryPayload = null;
-            bool isBinary = false;
-            try
+            bool isBinary = isAlreadyBrotliBrt1;
+
+            if (!isAlreadyBrotliBrt1)
             {
-                if (filePath.EndsWith(".brt1", StringComparison.OrdinalIgnoreCase))
+                try
                 {
-                    binaryPayload = new MemoryStream();
-                    using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    if (filePath.EndsWith(".brt1", StringComparison.OrdinalIgnoreCase))
                     {
-                        fs.CopyTo(binaryPayload);
+                        binaryPayload = new MemoryStream();
+                        using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                        {
+                            fs.CopyTo(binaryPayload);
+                        }
+                        binaryPayload.Position = 0;
+                        isBinary = true;
                     }
-                    binaryPayload.Position = 0;
-                    isBinary = true;
+                    else
+                    {
+                        var ms = new MemoryStream();
+                        using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                        {
+                            Brt1Encoder.ConvertCsvToBrt1Stream(fs, ms);
+                        }
+                        ms.Position = 0;
+                        binaryPayload = ms;
+                        isBinary = true;
+                    }
                 }
-                else
+                catch
                 {
-                    var ms = new MemoryStream();
-                    using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                    {
-                        Brt1Encoder.ConvertCsvToBrt1Stream(fs, ms);
-                    }
-                    ms.Position = 0;
-                    binaryPayload = ms;
-                    isBinary = true;
+                    // If binary conversion fails, fall back to uploading raw text CSV
+                    binaryPayload?.Dispose();
+                    binaryPayload = null;
+                    isBinary = false;
                 }
-            }
-            catch
-            {
-                // If binary conversion fails, fall back to uploading raw text CSV
-                binaryPayload?.Dispose();
-                binaryPayload = null;
-                isBinary = false;
             }
 
             try
@@ -1388,7 +1458,7 @@ namespace BrBrDbTelemetry
                         request.Timeout = 180000; // 3 minutes timeout for telemetry upload
                         request.SendChunked = true;
 
-                        if (tryCompressed)
+                        if (isAlreadyBrotliBrt1 || tryCompressed)
                         {
                             request.Headers["Content-Encoding"] = "br";
                         }
@@ -1398,40 +1468,52 @@ namespace BrBrDbTelemetry
                             request.Headers["X-API-Key"] = apiKey;
                         }
 
-                        Stream sourceStream = binaryPayload;
-                        FileStream fallbackFs = null;
-                        if (sourceStream != null)
+                        if (isAlreadyBrotliBrt1)
                         {
-                            sourceStream.Position = 0;
+                            // Direct stream copy of the already compressed BRT1 file
+                            using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                            using (Stream reqStream = request.GetRequestStream())
+                            {
+                                fs.CopyTo(reqStream);
+                            }
                         }
                         else
                         {
-                            fallbackFs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                            sourceStream = fallbackFs;
-                        }
-
-                        try
-                        {
-                            using (Stream reqStream = request.GetRequestStream())
+                            Stream sourceStream = binaryPayload;
+                            FileStream fallbackFs = null;
+                            if (sourceStream != null)
                             {
-                                if (tryCompressed)
+                                sourceStream.Position = 0;
+                            }
+                            else
+                            {
+                                fallbackFs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                                sourceStream = fallbackFs;
+                            }
+
+                            try
+                            {
+                                using (Stream reqStream = request.GetRequestStream())
                                 {
-                                    CompressBrotli(sourceStream, reqStream, 4);
-                                }
-                                else
-                                {
-                                    byte[] buffer = new byte[65536];
-                                    int bytesRead;
-                                    while ((bytesRead = sourceStream.Read(buffer, 0, buffer.Length)) > 0)
+                                    if (tryCompressed)
                                     {
-                                        reqStream.Write(buffer, 0, bytesRead);
+                                        CompressBrotli(sourceStream, reqStream, 4);
+                                    }
+                                    else
+                                    {
+                                        byte[] buffer = new byte[65536];
+                                        int bytesRead;
+                                        while ((bytesRead = sourceStream.Read(buffer, 0, buffer.Length)) > 0)
+                                        {
+                                            reqStream.Write(buffer, 0, bytesRead);
+                                        }
                                     }
                                 }
                             }
-                        }
-                        finally
-                        {
-                            fallbackFs?.Dispose();
+                            finally
+                            {
+                                fallbackFs?.Dispose();
+                            }
                         }
 
                         using (var response = (System.Net.HttpWebResponse)request.GetResponse())

@@ -31,6 +31,8 @@
 #include "safe_queue.h"
 #include "brt1_protocol.h"
 
+struct BrotliEncoderStateStruct;
+
 namespace race_tools {
 
 // Tracks retry attempts within a sliding time window (windowDuration) and enforces
@@ -97,7 +99,14 @@ private:
   Logger& logger_;
   std::wstring filePath_;
   std::ofstream file_;
-  size_t linesSinceFlush_ = 0;
+
+  Brt1StreamEncoder encoder_;
+  ::BrotliEncoderStateStruct* brotliState_ = nullptr;
+  size_t samplesSinceFlush_ = 0;
+
+  void CompressAndWrite(const void* data, size_t size, int op);
+  void FlushBrotli();
+  void Close();
 };
 
 struct HttpSinkOptions {

@@ -49,6 +49,10 @@ struct Brt1SessionMetadata {
   std::string className;
   std::string sessionName;
   std::string kartNumber;
+  std::string trackConfiguration;
+  std::string gameVersion;
+  std::string trackOriginLat;
+  std::string trackOriginLon;
 };
 
 // Returns standard 62 channels for Assetto Corsa / Evo (includes Handbrake)

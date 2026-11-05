@@ -30,6 +30,8 @@
 #include "safe_queue.h"
 #include "brt1_protocol.h"
 
+struct BrotliEncoderStateStruct;
+
 namespace race_tools {
 
 class RetryBackoff {
@@ -96,6 +98,14 @@ private:
   Logger& logger_;
   std::wstring filePath_;
   std::ofstream file_;
+
+  Brt1StreamEncoder encoder_;
+  ::BrotliEncoderStateStruct* brotliState_ = nullptr;
+  size_t samplesSinceFlush_ = 0;
+
+  void CompressAndWrite(const void* data, size_t size, int op);
+  void FlushBrotli();
+  void Close();
 };
 
 class HttpSink : public Sink {

@@ -27,8 +27,27 @@
 #include "net_utils.h"
 #include "sink.h"
 #include "logger.h"
+#include <brotli/decode.h>
 
 using namespace race_tools;
+
+static std::string DecompressBrotliFile(const std::string& path) {
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
+  if (!f.is_open()) return "";
+  std::streamsize compressedSize = f.tellg();
+  if (compressedSize <= 0) return "";
+  f.seekg(0, std::ios::beg);
+  std::vector<uint8_t> compressedData(compressedSize);
+  f.read(reinterpret_cast<char*>(compressedData.data()), compressedSize);
+  f.close();
+
+  std::vector<uint8_t> decompressed(65536 * 4);
+  size_t decodedSize = decompressed.size();
+  BrotliDecoderResult decResult = BrotliDecoderDecompress(
+      compressedData.size(), compressedData.data(), &decodedSize, decompressed.data());
+  if (decResult != BROTLI_DECODER_RESULT_SUCCESS) return "";
+  return std::string(reinterpret_cast<char*>(decompressed.data()), decodedSize);
+}
 
 static int g_testsRun = 0;
 static int g_testsFailed = 0;
@@ -297,26 +316,22 @@ void TestTelemetryCollectorWithMockSim() {
   mock.StopSim();
   mock.Shutdown();
 
-  // Verify that at least one CSV file was generated and contains origin metadata
-  bool foundCsv = false;
+  // Verify that at least one .brt1.br file was generated and contains origin metadata
+  bool foundLog = false;
   for (const auto& entry : std::filesystem::directory_iterator(tempLogDir)) {
-    if (entry.path().extension() == ".csv") {
-      foundCsv = true;
+    if (entry.path().filename().string().find(".brt1.br") != std::string::npos) {
+      foundLog = true;
       std::uintmax_t size = std::filesystem::file_size(entry.path());
-      TEST_ASSERT(size > 100, "CSV file should have content");
-      std::ifstream f(entry.path());
-      std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-      TEST_ASSERT(content.find("Track name,Monza") != std::string::npos, "CSV must contain Track name");
-      TEST_ASSERT(content.find("Game version,0.1.0") != std::string::npos, "CSV must contain Game version");
-      TEST_ASSERT(content.find("Track Origin Latitude,45.61389000") != std::string::npos, "CSV must contain Track Origin Latitude for Monza");
-      TEST_ASSERT(content.find("Track Origin Longitude,9.28624000") != std::string::npos, "CSV must contain Track Origin Longitude for Monza");
-      TEST_ASSERT(content.find("Track Origin Heading,") == std::string::npos, "CSV must NOT contain Track Origin Heading");
-      TEST_ASSERT(content.find("\nOrigin Heading,") == std::string::npos, "CSV must NOT contain standalone Origin Heading");
-      TEST_ASSERT(content.find("\nOrigin Latitude,") == std::string::npos, "CSV must NOT contain standalone Origin Latitude");
+      TEST_ASSERT(size > 20, "BRT1.br file should have content");
+      std::string content = DecompressBrotliFile(entry.path().string());
+      TEST_ASSERT(content.find("Monza") != std::string::npos, "File must contain Track name Monza");
+      TEST_ASSERT(content.find("0.1.0") != std::string::npos, "File must contain Game version");
+      TEST_ASSERT(content.find("45.61389000") != std::string::npos, "File must contain Track Origin Latitude for Monza");
+      TEST_ASSERT(content.find("9.28624000") != std::string::npos, "File must contain Track Origin Longitude for Monza");
       break;
     }
   }
-  TEST_ASSERT(foundCsv, "Collector should have created a CSV file");
+  TEST_ASSERT(foundLog, "Collector should have created a .brt1.br file");
 
   std::filesystem::remove_all(tempLogDir, ec);
 }
@@ -460,19 +475,18 @@ void TestAcRallyTelemetryCollectorSession() {
   mock.StopSim();
   mock.Shutdown();
 
-  // Verify that generated CSV file contains League,acr
-  bool foundAcrCsv = false;
+  // Verify that generated .brt1.br file contains League acr
+  bool foundAcrLog = false;
   for (const auto& entry : std::filesystem::directory_iterator(tempLogDir)) {
-    if (entry.path().extension() == ".csv") {
-      foundAcrCsv = true;
-      std::ifstream f(entry.path());
-      std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-      TEST_ASSERT(content.find("League,acr") != std::string::npos, "CSV must contain League,acr");
-      TEST_ASSERT(content.find("Track name,Monza") != std::string::npos, "CSV must contain Track name");
+    if (entry.path().filename().string().find(".brt1.br") != std::string::npos) {
+      foundAcrLog = true;
+      std::string content = DecompressBrotliFile(entry.path().string());
+      TEST_ASSERT(content.find("acr") != std::string::npos, "File must contain League acr");
+      TEST_ASSERT(content.find("Monza") != std::string::npos, "File must contain Track name Monza");
       break;
     }
   }
-  TEST_ASSERT(foundAcrCsv, "Collector should have created a CSV file for ACR");
+  TEST_ASSERT(foundAcrLog, "Collector should have created a .brt1.br file for ACR");
 
   std::filesystem::remove_all(tempLogDir, ec);
 }
@@ -535,18 +549,17 @@ void TestTelemetryCollectorTrackConfiguration() {
   collector.Stop();
   mock.Shutdown();
 
-  bool foundFujiCsv = false;
+  bool foundFujiLog = false;
   for (const auto& entry : std::filesystem::directory_iterator(tempLogDir)) {
-    if (entry.path().extension() == ".csv") {
-      foundFujiCsv = true;
-      std::ifstream f(entry.path());
-      std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-      TEST_ASSERT(content.find("Track name,Fuji Speedway GP Short") != std::string::npos, "CSV must contain Track name,Fuji Speedway GP Short");
-      TEST_ASSERT(content.find("Track configuration,GP Short") != std::string::npos, "CSV must contain Track configuration,GP Short");
+    if (entry.path().filename().string().find(".brt1.br") != std::string::npos) {
+      foundFujiLog = true;
+      std::string content = DecompressBrotliFile(entry.path().string());
+      TEST_ASSERT(content.find("Fuji Speedway GP Short") != std::string::npos, "File must contain Track name Fuji Speedway GP Short");
+      TEST_ASSERT(content.find("GP Short") != std::string::npos, "File must contain Track configuration GP Short");
       break;
     }
   }
-  TEST_ASSERT(foundFujiCsv, "Collector should have created a CSV file for Fuji");
+  TEST_ASSERT(foundFujiLog, "Collector should have created a .brt1.br file for Fuji");
 
   std::filesystem::remove_all(tempLogDir, ec);
 }
@@ -807,6 +820,64 @@ void TestBrt1Protocol() {
   TEST_ASSERT(idx == channels.size(), "CSV header column count must match channel count");
 }
 
+void TestFileSinkBrotliBrt1() {
+  std::wstring tempLogDir = std::filesystem::temp_directory_path().wstring() + L"\\filesink_brotli_test_" +
+                            std::to_wstring(std::chrono::system_clock::now().time_since_epoch().count());
+  std::error_code ec;
+  std::filesystem::create_directories(tempLogDir, ec);
+
+  Logger logger(tempLogDir + L"\\test.log");
+
+  Sink::SessionMetadata meta;
+  meta.trackName = "Monza";
+  meta.driverName = "Alice";
+  meta.date = "2026-11-05";
+  meta.time = "22:00:00";
+
+  auto now = std::chrono::system_clock::now();
+  {
+    FileSink sink(tempLogDir, logger);
+    sink(Sink::StartSession{now, "Alice_Car_Monza_Practice", meta});
+
+    std::vector<double> sample1(62, 0.0);
+    sample1[0] = 1778423400.0; // Time
+    sample1[1] = 10.0;          // Speed
+    sink(Sink::Line{"", false, sample1});
+
+    std::vector<double> sample2 = sample1;
+    sample2[0] += 0.01;
+    sample2[1] += 0.5;
+    sink(Sink::Line{"", false, sample2});
+
+    sink(Sink::EndSession{});
+  }
+
+  // Find generated .brt1.br file
+  std::string generatedFile;
+  for (const auto& entry : std::filesystem::directory_iterator(tempLogDir)) {
+    if (entry.path().filename().string().find(".brt1.br") != std::string::npos) {
+      generatedFile = entry.path().string();
+      break;
+    }
+  }
+  TEST_ASSERT(!generatedFile.empty(), "FileSink should have produced a .brt1.br file");
+
+  std::string decompressed = DecompressBrotliFile(generatedFile);
+  TEST_ASSERT(!decompressed.empty(), "Decompressed data should not be empty");
+
+  Brt1StreamDecoder decoder;
+  decoder.Feed(decompressed);
+  std::unordered_map<std::string, double> record;
+  std::string err;
+
+  TEST_ASSERT(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::MagicReceived, "Magic chunk check");
+  TEST_ASSERT(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::MetadataReceived, "Metadata chunk check");
+  TEST_ASSERT(decoder.GetMetadata().trackName == "Monza", "Metadata track should be Monza");
+  TEST_ASSERT(decoder.GetMetadata().driverName == "Alice", "Metadata driver should be Alice");
+
+  std::filesystem::remove_all(tempLogDir, ec);
+}
+
 int main() {
   std::cout << "==================================================\n";
   std::cout << "Running Assetto Corsa / Evo / Rally Unit Tests...\n";
@@ -823,6 +894,7 @@ int main() {
   RUN_TEST(TestClassicAssettoCorsaLayout);
   RUN_TEST(TestFormatTelemetryLine);
   RUN_TEST(TestBrt1Protocol);
+  RUN_TEST(TestFileSinkBrotliBrt1);
   RUN_TEST(TestSessionStateTransitions);
   RUN_TEST(TestTelemetryCollectorWithMockSim);
   RUN_TEST(TestAcRallyTelemetryCollectorSession);

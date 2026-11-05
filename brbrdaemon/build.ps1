@@ -2,7 +2,7 @@
 # Portable build and test script for brbrdaemon
 
 param(
-    [ValidateSet("build", "test", "mock")]
+    [ValidateSet("build", "test", "mock", "deploy")]
     [string]$Target = "build"
 )
 
@@ -31,7 +31,8 @@ if (Test-Path $vswhere) {
 try {
     & $cmakePath --version | Out-Null
     Write-Host "Using CMake: $cmakePath"
-} catch {
+}
+catch {
     Write-Error "CMake could not be found or executed. Please ensure CMake or Visual Studio is installed."
     exit 1
 }
@@ -87,4 +88,36 @@ if ($Target -eq "build") {
     Write-Host "Building brbrdaemon (Release)..."
     & $cmakePath --build build --config Release --target brbrdaemon
     exit $LASTEXITCODE
+}
+
+if ($Target -eq "deploy") {
+    powershell -ExecutionPolicy Bypass -File .\build.ps1 -Target test
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Unit tests failed! Aborting deployment."
+        exit $LASTEXITCODE
+    }
+
+    Write-Host ""
+    Write-Host "Building brbrdaemon (Release)..."
+    & $cmakePath --build build --config Release --target brbrdaemon
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "brbrdaemon compilation failed! Aborting deployment."
+        exit $LASTEXITCODE
+    }
+
+    $sourceExe = "build/bin/Release/brbrdaemon.exe"
+    $targetDir = Join-Path $env:LOCALAPPDATA "BrBrDbTelemetry"
+    if (Test-Path $targetDir) {
+        Write-Host "Deploying brbrdaemon to $targetDir..."
+        Stop-Process -Name brbrdaemon -Force -ErrorAction SilentlyContinue
+        Stop-Process -Name BrBrDbTelemetryAce -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
+
+        Copy-Item $sourceExe -Destination (Join-Path $targetDir "brbrdaemon.exe") -Force
+        Write-Host "SUCCESS: Deployed brbrdaemon.exe to $targetDir"
+    }
+    else {
+        Write-Host "Target directory $targetDir does not exist yet. Built binary is in $sourceExe"
+    }
+    exit 0
 }

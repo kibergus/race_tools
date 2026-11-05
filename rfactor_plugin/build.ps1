@@ -148,6 +148,14 @@ if ($Target -eq "deploy") {
         exit $LASTEXITCODE
     }
 
+    # 2b. Build brbrdaemon (Release) so it gets embedded into the installer
+    Write-Host ""
+    Write-Host "Building brbrdaemon (Release)..."
+    $daemonBuildScript = Join-Path $PSScriptRoot "..\brbrdaemon\build.ps1"
+    if (Test-Path $daemonBuildScript) {
+        powershell -ExecutionPolicy Bypass -File $daemonBuildScript -Target build
+    }
+
     # 3. Publish C# GUI Installer & Configurator
     Write-Host ""
     Write-Host "Publishing GUI Installer and Configurator (Self-Contained .NET 8 win-x64)..."

@@ -509,6 +509,9 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
   sprintf_s(dateBuf, "%04d-%02d-%02d", start_tm.tm_year + 1900, start_tm.tm_mon + 1, start_tm.tm_mday);
   sprintf_s(timeBuf, "%02d:%02d:%02d", start_tm.tm_hour, start_tm.tm_min, start_tm.tm_sec);
 
+  TrackGeoOrigin origin = ResolveTrackOrigin(fullTrackName, statics.latitude, statics.longitude);
+  std::string gameVersion = Trim(statics.gameVersion);
+
   Sink::SessionMetadata sessionMeta;
   sessionMeta.trackName = fullTrackName.empty() ? "Unknown Track" : fullTrackName;
   sessionMeta.date = dateBuf;
@@ -518,6 +521,16 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
   sessionMeta.className = carName.empty() ? "Unknown Class" : carName;
   sessionMeta.sessionName = sessionType.empty() ? "Practice" : sessionType;
   sessionMeta.kartNumber = carNumber;
+  sessionMeta.trackConfiguration = statics.trackConfiguration;
+  sessionMeta.gameVersion = gameVersion;
+  if (origin.latitude != 0.0 || origin.longitude != 0.0) {
+    char latBuf[32];
+    char lonBuf[32];
+    sprintf_s(latBuf, "%.8f", origin.latitude);
+    sprintf_s(lonBuf, "%.8f", origin.longitude);
+    sessionMeta.trackOriginLat = latBuf;
+    sessionMeta.trackOriginLon = lonBuf;
+  }
 
   // Push Start Event
   sessionQueue_->Push(Sink::StartSession{sessionStartTime_, tag, sessionMeta});
@@ -527,7 +540,6 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
   if (!statics.trackConfiguration.empty()) {
     ss << "Track configuration," << EscapeCsvMetadata(statics.trackConfiguration) << "\n";
   }
-  TrackGeoOrigin origin = ResolveTrackOrigin(fullTrackName, statics.latitude, statics.longitude);
   ss << std::fixed;
   if (origin.latitude != 0.0 || origin.longitude != 0.0) {
     ss << "Track Origin Latitude," << std::setprecision(8) << origin.latitude << "\n";
@@ -542,7 +554,6 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
   if (!carNumber.empty()) {
     ss << "Kart number," << EscapeCsvMetadata(carNumber) << "\n";
   }
-  std::string gameVersion = Trim(statics.gameVersion);
   if (!gameVersion.empty()) {
     ss << "Game version," << EscapeCsvMetadata(gameVersion) << "\n";
   }

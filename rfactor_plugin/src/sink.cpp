@@ -25,6 +25,7 @@
 #include <windows.h>
 #include "net_utils.h"
 #include <winhttp.h>
+#include <brotli/encode.h>
 #pragma comment(lib, "winhttp.lib")
 
 namespace race_tools {
@@ -182,38 +183,124 @@ FileSink::FileSink(const std::wstring& logDirectory, Logger& logger)
     : logDirectory_(logDirectory), logger_(logger) {}
 
 FileSink::~FileSink() {
-  operator()(EndSession{});
+  Close();
 }
 
 void FileSink::operator()(const StartSession& start) {
+  Close();
+
   auto time_t_val = std::chrono::system_clock::to_time_t(start.sessionStartTime);
   std::stringstream ss;
   if (start.participantTag.empty()) {
-    ss << "BrBrDbTelemetry_" << time_t_val << "_server.csv";
+    ss << "BrBrDbTelemetry_" << time_t_val << "_server.brt1.br";
   } else {
-    ss << "BrBrDbTelemetry_" << time_t_val << "_" << start.participantTag << "_server.csv";
+    ss << "BrBrDbTelemetry_" << time_t_val << "_" << start.participantTag << "_server.brt1.br";
   }
   filePath_ = logDirectory_ + L"\\" + std::filesystem::path(ss.str()).wstring();
 
-  file_.open(filePath_, std::ios::out | std::ios::trunc);
+  file_.open(filePath_, std::ios::out | std::ios::binary | std::ios::trunc);
   if (!file_.is_open()) {
     logger_.Write("FileSink - Failed to open file: " + WStringToString(filePath_));
-  } else {
-    logger_.Write("FileSink - Started session, writing to: " + WStringToString(filePath_));
+    return;
   }
+  logger_.Write("FileSink - Started session, writing to: " + WStringToString(filePath_));
+
+  encoder_.Reset();
+  samplesSinceFlush_ = 0;
+
+  if (brotliState_) {
+    BrotliEncoderDestroyInstance(brotliState_);
+  }
+  brotliState_ = BrotliEncoderCreateInstance(nullptr, nullptr, nullptr);
+  if (brotliState_) {
+    BrotliEncoderSetParameter(brotliState_, BROTLI_PARAM_QUALITY, 4);
+    BrotliEncoderSetParameter(brotliState_, BROTLI_PARAM_LGWIN, 22);
+    BrotliEncoderSetParameter(brotliState_, BROTLI_PARAM_MODE, BROTLI_MODE_GENERIC);
+  }
+
+  // Stream initial BRT1 Magic and Metadata JSON chunks
+  std::string magic = encoder_.EncodeMagicChunk();
+  CompressAndWrite(magic.data(), magic.size(), BROTLI_OPERATION_PROCESS);
+  std::string meta = encoder_.EncodeMetadataChunk(start.metadata);
+  CompressAndWrite(meta.data(), meta.size(), BROTLI_OPERATION_PROCESS);
+  FlushBrotli();
 }
 
 void FileSink::operator()(const Line& line) {
-  if (file_.is_open()) {
-    file_ << line.text;
+  if (line.is_header || line.values.empty() || !brotliState_ || !file_.is_open()) {
+    return;
+  }
+
+  std::string chunk = encoder_.EncodeSample(line.values);
+  CompressAndWrite(chunk.data(), chunk.size(), BROTLI_OPERATION_PROCESS);
+
+  if (++samplesSinceFlush_ >= 200) { // Flush every ~2 seconds at 100 Hz
+    FlushBrotli();
+    samplesSinceFlush_ = 0;
   }
 }
 
 void FileSink::operator()(const EndSession& end) {
   (void)end;
+  Close();
+}
+
+void FileSink::Close() {
+  if (brotliState_) {
+    std::string eos = encoder_.EncodeEOSChunk();
+    CompressAndWrite(eos.data(), eos.size(), BROTLI_OPERATION_PROCESS);
+    CompressAndWrite(nullptr, 0, BROTLI_OPERATION_FINISH);
+    BrotliEncoderDestroyInstance(brotliState_);
+    brotliState_ = nullptr;
+  }
   if (file_.is_open()) {
+    file_.flush();
     file_.close();
     logger_.Write("FileSink - Ended session, file closed: " + WStringToString(filePath_));
+  }
+}
+
+void FileSink::CompressAndWrite(const void* data, size_t size, int op) {
+  if (!brotliState_ || !file_.is_open()) return;
+
+  const uint8_t* next_in = static_cast<const uint8_t*>(data);
+  size_t available_in = size;
+  BrotliEncoderOperation brotliOp = static_cast<BrotliEncoderOperation>(op);
+
+  while (available_in > 0 || brotliOp != BROTLI_OPERATION_PROCESS || BrotliEncoderHasMoreOutput(brotliState_)) {
+    uint8_t outBuf[8192];
+    uint8_t* next_out = outBuf;
+    size_t available_out = sizeof(outBuf);
+
+    BROTLI_BOOL result = BrotliEncoderCompressStream(
+        brotliState_,
+        brotliOp,
+        &available_in,
+        &next_in,
+        &available_out,
+        &next_out,
+        nullptr);
+
+    size_t bytesProduced = sizeof(outBuf) - available_out;
+    if (bytesProduced > 0) {
+      file_.write(reinterpret_cast<const char*>(outBuf), bytesProduced);
+    }
+
+    if (!result) {
+      logger_.Write("FileSink - Brotli compression error");
+      break;
+    }
+
+    if (available_in == 0 && !BrotliEncoderHasMoreOutput(brotliState_)) {
+      break;
+    }
+  }
+}
+
+void FileSink::FlushBrotli() {
+  CompressAndWrite(nullptr, 0, BROTLI_OPERATION_FLUSH);
+  if (file_.is_open()) {
+    file_.flush();
   }
 }
 

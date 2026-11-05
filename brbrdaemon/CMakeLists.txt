@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.12)
-project(brbrdaemon VERSION 1.0 LANGUAGES CXX)
+project(brbrdaemon VERSION 1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,6 +64,25 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+# Brotli compression library
+set(BROTLI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/brotli/c")
+file(GLOB BROTLI_COMMON_SOURCES "${BROTLI_DIR}/common/*.c")
+file(GLOB BROTLI_ENC_SOURCES "${BROTLI_DIR}/enc/*.c")
+file(GLOB BROTLI_DEC_SOURCES "${BROTLI_DIR}/dec/*.c")
+
+add_library(brotli_static STATIC
+    ${BROTLI_COMMON_SOURCES}
+    ${BROTLI_ENC_SOURCES}
+    ${BROTLI_DEC_SOURCES}
+)
+target_include_directories(brotli_static PUBLIC
+    "${BROTLI_DIR}/include"
+    "${BROTLI_DIR}"
+)
+if(MSVC)
+    target_compile_options(brotli_static PRIVATE /W3 /wd4244 /wd4267)
+endif()
+
 # Static Core Library for Daemon, Runner, and Unit Tests
 add_library(brbrdaemon_core STATIC
     src/ace_shared_memory.cpp
@@ -82,7 +101,7 @@ add_library(brbrdaemon_core STATIC
     src/net_utils.h
 )
 
-target_link_libraries(brbrdaemon_core PUBLIC winhttp shell32 user32 winmm)
+target_link_libraries(brbrdaemon_core PUBLIC winhttp shell32 user32 winmm brotli_static)
 
 if(MSVC)
     target_compile_options(brbrdaemon_core PRIVATE /W4 /EHsc /permissive-)

@@ -53,6 +53,8 @@ namespace BrBrDbTelemetry
             RunTest("TestBrt1Encoder_ConvertCsvToBrt1", TestBrt1Encoder_ConvertCsvToBrt1);
             RunTest("TestBrt1Encoder_GetSessionMetadata_Brt1", TestBrt1Encoder_GetSessionMetadata_Brt1);
             RunTest("TestBrt1Encoder_GetSessionFiles_IncludesBrt1", TestBrt1Encoder_GetSessionFiles_IncludesBrt1);
+            RunTest("TestBrt1Encoder_GetSessionMetadata_Brt1Br", TestBrt1Encoder_GetSessionMetadata_Brt1Br);
+            RunTest("TestBrt1Encoder_GetSessionFiles_IncludesBrt1Br", TestBrt1Encoder_GetSessionFiles_IncludesBrt1Br);
 
             Console.WriteLine("==================================================");
             Console.WriteLine(string.Format("Tests run: {0}, Failed: {1}", testsRun, testsFailed));
@@ -866,6 +868,72 @@ namespace BrBrDbTelemetry
 
                 var files = InstallManager.GetSessionFiles(tempDir);
                 Assert(files.Length == 2, "GetSessionFiles should discover both .csv and .brt1 files");
+            }
+            finally
+            {
+                DeleteTempDirectory(tempDir);
+            }
+        }
+
+        static void TestBrt1Encoder_GetSessionMetadata_Brt1Br()
+        {
+            string tempDir = CreateTempDirectory();
+            try
+            {
+                string csvContent =
+                    "Track name,Silverstone GP\n" +
+                    "Date,2026-11-05\n" +
+                    "Time,21:00:00\n" +
+                    "Driver name,TestDriver\n" +
+                    "\n" +
+                    "Time,Speed\n" +
+                    "2026-11-05T21:00:00.000Z,50.0\n";
+
+                string brt1BrPath = Path.Combine(tempDir, "test_session.brt1.br");
+                using (var csvMs = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(csvContent)))
+                using (var brt1Ms = new MemoryStream())
+                {
+                    Brt1Encoder.ConvertCsvToBrt1Stream(csvMs, brt1Ms);
+                    brt1Ms.Position = 0;
+                    using (var fs = new FileStream(brt1BrPath, FileMode.Create, FileAccess.Write))
+                    {
+                        InstallManager.CompressBrotli(brt1Ms, fs, quality: 4);
+                    }
+                }
+
+                var meta = InstallManager.GetSessionMetadata(new FileInfo(brt1BrPath));
+                Assert(meta.Track == "Silverstone GP", "Extracted track should match Silverstone GP");
+                Assert(meta.Date == "2026-11-05", "Extracted date should match 2026-11-05");
+                Assert(meta.Time == "21:00:00", "Extracted time should match 21:00:00");
+            }
+            finally
+            {
+                DeleteTempDirectory(tempDir);
+            }
+        }
+
+        static void TestBrt1Encoder_GetSessionFiles_IncludesBrt1Br()
+        {
+            string tempDir = CreateTempDirectory();
+            try
+            {
+                string csvFile = Path.Combine(tempDir, "session1.csv");
+                string brt1BrFile = Path.Combine(tempDir, "session2.brt1.br");
+                string ignoredFile = Path.Combine(tempDir, "session3.txt");
+                File.WriteAllText(csvFile, "Time,x\n0,0\n");
+                File.WriteAllText(brt1BrFile, "mock brt1.br");
+                File.WriteAllText(ignoredFile, "mock text");
+
+                var files = InstallManager.GetSessionFiles(tempDir);
+                Assert(files.Length == 2, "GetSessionFiles should discover both .csv and .brt1.br files");
+                bool hasCsv = false;
+                bool hasBrt1Br = false;
+                foreach (var f in files)
+                {
+                    if (f.FullName == csvFile) hasCsv = true;
+                    if (f.FullName == brt1BrFile) hasBrt1Br = true;
+                }
+                Assert(hasCsv && hasBrt1Br, "Should discover both session1.csv and session2.brt1.br");
             }
             finally
             {

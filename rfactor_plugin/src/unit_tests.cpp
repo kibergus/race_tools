@@ -20,6 +20,7 @@
 #include "logger.h"
 #include "sink.h"
 #include "brbrdb_telemetry_plugin.h"
+#include <brotli/decode.h>
 #include <iostream>
 #include <cassert>
 #include <cmath>
@@ -33,6 +34,24 @@ using namespace race_tools;
 // Helper to check closeness of doubles
 bool IsClose(double a, double b, double epsilon = 1e-6) {
   return std::abs(a - b) < epsilon;
+}
+
+static std::string DecompressBrotliFile(const std::string& path) {
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
+  if (!f.is_open()) return "";
+  std::streamsize compressedSize = f.tellg();
+  if (compressedSize <= 0) return "";
+  f.seekg(0, std::ios::beg);
+  std::vector<uint8_t> compressedData(compressedSize);
+  f.read(reinterpret_cast<char*>(compressedData.data()), compressedSize);
+  f.close();
+
+  std::vector<uint8_t> decompressed(65536 * 4);
+  size_t decodedSize = decompressed.size();
+  BrotliDecoderResult decResult = BrotliDecoderDecompress(
+      compressedData.size(), compressedData.data(), &decodedSize, decompressed.data());
+  if (decResult != BROTLI_DECODER_RESULT_SUCCESS) return "";
+  return std::string(reinterpret_cast<char*>(decompressed.data()), decodedSize);
 }
 
 void TestIdentityMatrix() {
@@ -502,28 +521,25 @@ void TestMultiParticipantTelemetry() {
     plugin.ExitRealtime();
     plugin.Shutdown();
 
-    int csvCount = 0;
+    int logCount = 0;
     bool foundPlayerFile = false;
     bool foundRivalFile = false;
     for (const auto& entry : std::filesystem::directory_iterator(tempLogDir)) {
-      if (entry.path().extension() == ".csv") {
-        csvCount++;
-        std::string filename = entry.path().filename().string();
+      std::string filename = entry.path().filename().string();
+      if (filename.find(".brt1.br") != std::string::npos) {
+        logCount++;
+        std::string decompressed = DecompressBrotliFile(entry.path().string());
         if (filename.find("PlayerDriver") != std::string::npos) {
           foundPlayerFile = true;
-          std::ifstream in(entry.path());
-          std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-          assert(content.find("Driver name,PlayerDriver") != std::string::npos);
+          assert(decompressed.find("PlayerDriver") != std::string::npos);
         }
         if (filename.find("RivalDriver") != std::string::npos) {
           foundRivalFile = true;
-          std::ifstream in(entry.path());
-          std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-          assert(content.find("Driver name,RivalDriver") != std::string::npos);
+          assert(decompressed.find("RivalDriver") != std::string::npos);
         }
       }
     }
-    assert(csvCount == 2);
+    assert(logCount == 2);
     assert(foundPlayerFile);
     assert(foundRivalFile);
   }
@@ -595,16 +611,15 @@ void TestPlayerOnlyTelemetry() {
     plugin.ExitRealtime();
     plugin.Shutdown();
 
-    int csvCount = 0;
+    int fileCount = 0;
     for (const auto& entry : std::filesystem::directory_iterator(tempLogDir)) {
-      if (entry.path().extension() == ".csv") {
-        csvCount++;
-        std::string filename = entry.path().filename().string();
-        assert(filename.find("_server.csv") != std::string::npos);
+      std::string filename = entry.path().filename().string();
+      if (filename.find("_server.brt1.br") != std::string::npos) {
+        fileCount++;
         assert(filename.find("SoloDriver") == std::string::npos);
       }
     }
-    assert(csvCount == 1);
+    assert(fileCount == 1);
   }
 
   if (std::filesystem::exists(backupConfigPath)) {
@@ -804,11 +819,101 @@ void TestBrt1NaNAndKeyframeHandling() {
   std::cout << "TestBrt1NaNAndKeyframeHandling passed!" << std::endl;
 }
 
+void TestFileSinkBrotliBrt1() {
+  std::string tempLogDir = "test_filesink_brotli_dir";
+  std::error_code ec;
+  std::filesystem::remove_all(tempLogDir, ec);
+  std::filesystem::create_directories(tempLogDir, ec);
+
+  Logger logger;
+  logger.Open(tempLogDir + "/test.log");
+  std::wstring wLogDir(tempLogDir.begin(), tempLogDir.end());
+
+  Sink::SessionMetadata meta;
+  meta.trackName = "Silverstone";
+  meta.driverName = "Alice";
+  meta.date = "2026-11-05";
+  meta.time = "22:00:00";
+
+  auto now = std::chrono::system_clock::now();
+  {
+    FileSink sink(wLogDir, logger);
+    sink(Sink::StartSession{now, "Car1", meta});
+
+    std::vector<double> sample1(61, 0.0);
+    sample1[0] = 1778423400.0; // Time
+    sample1[1] = 10.0;          // x
+    sample1[2] = 20.0;          // z
+    sample1[3] = 30.0;          // Speed
+    sink(Sink::Line{"", false, sample1});
+
+    std::vector<double> sample2 = sample1;
+    sample2[0] += 0.01;
+    sample2[1] += 0.1;
+    sink(Sink::Line{"", false, sample2});
+
+    sink(Sink::EndSession{});
+  }
+
+  // Find generated .brt1.br file
+  std::string generatedFile;
+  for (const auto& entry : std::filesystem::directory_iterator(tempLogDir)) {
+    if (entry.path().filename().string().find(".brt1.br") != std::string::npos) {
+      generatedFile = entry.path().string();
+      break;
+    }
+  }
+  assert(!generatedFile.empty());
+
+  // Read file content
+  std::ifstream f(generatedFile, std::ios::binary | std::ios::ate);
+  assert(f.is_open());
+  std::streamsize compressedSize = f.tellg();
+  assert(compressedSize > 0);
+  f.seekg(0, std::ios::beg);
+  std::vector<uint8_t> compressedData(compressedSize);
+  f.read(reinterpret_cast<char*>(compressedData.data()), compressedSize);
+  f.close();
+
+  // Decompress using Brotli
+  std::vector<uint8_t> decompressed(65536);
+  size_t decodedSize = decompressed.size();
+  BrotliDecoderResult decResult = BrotliDecoderDecompress(
+      compressedData.size(), compressedData.data(), &decodedSize, decompressed.data());
+  assert(decResult == BROTLI_DECODER_RESULT_SUCCESS);
+  (void)decResult;
+  assert(decodedSize > 0);
+
+  // Decode with Brt1StreamDecoder
+  Brt1StreamDecoder decoder;
+  decoder.Feed(std::string(reinterpret_cast<char*>(decompressed.data()), decodedSize));
+  std::unordered_map<std::string, double> record;
+  std::string err;
+
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::MagicReceived);
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::MetadataReceived);
+  assert(decoder.GetMetadata().trackName == "Silverstone");
+  assert(decoder.GetMetadata().driverName == "Alice");
+
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::BaselineReceived);
+  assert(IsClose(record["x"], 10.0, 1e-3));
+  assert(IsClose(record["Speed"], 30.0, 1e-2));
+
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::SampleDecoded);
+  assert(IsClose(record["x"], 10.1, 1e-3));
+
+  assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::EndOfStream);
+
+  std::filesystem::remove_all(tempLogDir, ec);
+  std::cout << "TestFileSinkBrotliBrt1 passed!" << std::endl;
+}
+
 int main() {
   std::cout << "Running unit tests for BRT1 Protocol..." << std::endl;
   TestBrt1FramingAndMagic();
   TestBrt1StreamRoundTrip();
   TestBrt1NaNAndKeyframeHandling();
+  TestFileSinkBrotliBrt1();
   std::cout << "Running unit tests for MatrixToQuaternion..." << std::endl;
   TestIdentityMatrix();
   TestRotation90X();
