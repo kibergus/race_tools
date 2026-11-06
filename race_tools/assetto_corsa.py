@@ -29,7 +29,7 @@ TRACK_ORIGINS: dict[str, AssettoCorsaTrackOrigin] = {
     'brands_hatch': AssettoCorsaTrackOrigin(
         51.356800, 0.263100,
         track_data.Correction(north_m=7.30, east_m=-43.0, angle_deg=2.20)),
-    'cota': AssettoCorsaTrackOrigin(
+    'circuit_of_the_americas': AssettoCorsaTrackOrigin(
         30.132800, -97.641100,
         track_data.Correction(north_m=24.0, east_m=-753.0, angle_deg=-1.30)),
     'donington': AssettoCorsaTrackOrigin(
