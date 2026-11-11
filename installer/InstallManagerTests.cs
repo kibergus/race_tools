@@ -55,6 +55,7 @@ namespace BrBrDbTelemetry
             RunTest("TestBrt1Encoder_GetSessionFiles_IncludesBrt1", TestBrt1Encoder_GetSessionFiles_IncludesBrt1);
             RunTest("TestBrt1Encoder_GetSessionMetadata_Brt1Br", TestBrt1Encoder_GetSessionMetadata_Brt1Br);
             RunTest("TestBrt1Encoder_GetSessionFiles_IncludesBrt1Br", TestBrt1Encoder_GetSessionFiles_IncludesBrt1Br);
+            RunTest("TestGetSessionMetadataHeader", TestGetSessionMetadataHeader);
 
             Console.WriteLine("==================================================");
             Console.WriteLine(string.Format("Tests run: {0}, Failed: {1}", testsRun, testsFailed));
@@ -934,6 +935,66 @@ namespace BrBrDbTelemetry
                     if (f.FullName == brt1BrFile) hasBrt1Br = true;
                 }
                 Assert(hasCsv && hasBrt1Br, "Should discover both session1.csv and session2.brt1.br");
+            }
+            finally
+            {
+                DeleteTempDirectory(tempDir);
+            }
+        }
+
+        static void TestGetSessionMetadataHeader()
+        {
+            string tempDir = CreateTempDirectory();
+            try
+            {
+                string csvContent =
+                    "Track name,Silverstone GP\n" +
+                    "Date,2026-11-05\n" +
+                    "Time,21:00:00\n" +
+                    "Driver name,TestDriver\n" +
+                    "League,acevo\n" +
+                    "\n" +
+                    "Time,Speed,Throttle\n" +
+                    "2026-11-05T21:00:00.000Z,50.0,80.0\n" +
+                    "2026-11-05T21:00:00.010Z,51.0,85.0\n";
+
+                // 1. Test CSV metadata header
+                string csvPath = Path.Combine(tempDir, "test_session.csv");
+                File.WriteAllText(csvPath, csvContent);
+                string csvHeader = InstallManager.GetSessionMetadataHeader(new FileInfo(csvPath));
+                Assert(csvHeader.Contains("Track name,Silverstone GP"), "CSV header should contain Track name");
+                Assert(csvHeader.Contains("Time,21:00:00"), "CSV header should contain Time metadata line");
+                Assert(csvHeader.Contains("Time,Speed,Throttle"), "CSV header should contain column header line");
+                Assert(!csvHeader.Contains("2026-11-05T21:00:00.000Z"), "CSV header should not include data rows");
+
+                // 2. Test .brt1 metadata header
+                string brt1Path = Path.Combine(tempDir, "test_session.brt1");
+                using (var csvMs = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(csvContent)))
+                using (var fs = new FileStream(brt1Path, FileMode.Create, FileAccess.Write))
+                {
+                    Brt1Encoder.ConvertCsvToBrt1Stream(csvMs, fs);
+                }
+                string brt1Header = InstallManager.GetSessionMetadataHeader(new FileInfo(brt1Path));
+                Assert(brt1Header.Contains("\"track_name\": \"Silverstone GP\""), "BRT1 header should contain pretty-printed track_name");
+                Assert(brt1Header.Contains("\"driver_name\": \"TestDriver\""), "BRT1 header should contain driver_name");
+                Assert(brt1Header.Contains("\"league\": \"acevo\""), "BRT1 header should contain league");
+                Assert(brt1Header.Contains("\"channels\""), "BRT1 header should contain channels array");
+
+                // 3. Test .brt1.br metadata header
+                string brt1BrPath = Path.Combine(tempDir, "test_session.brt1.br");
+                using (var brt1Fs = new FileStream(brt1Path, FileMode.Open, FileAccess.Read))
+                using (var brt1BrFs = new FileStream(brt1BrPath, FileMode.Create, FileAccess.Write))
+                {
+                    InstallManager.CompressBrotli(brt1Fs, brt1BrFs, quality: 4);
+                }
+                string brt1BrHeader = InstallManager.GetSessionMetadataHeader(new FileInfo(brt1BrPath));
+                Assert(brt1BrHeader.Contains("\"track_name\": \"Silverstone GP\""), "BRT1.br header should contain pretty-printed track_name");
+                Assert(brt1BrHeader.Contains("\"driver_name\": \"TestDriver\""), "BRT1.br header should contain driver_name");
+                Assert(brt1BrHeader.Contains("\"league\": \"acevo\""), "BRT1.br header should contain league");
+
+                // 4. Test missing file
+                string missingHeader = InstallManager.GetSessionMetadataHeader(new FileInfo(Path.Combine(tempDir, "missing.brt1.br")));
+                Assert(missingHeader.Contains("does not exist"), "Missing file should return descriptive message");
             }
             finally
             {

@@ -927,6 +927,7 @@ namespace BrBrDbTelemetry
             lvSessions.ClientSizeChanged += (s, e) => AdjustSessionColumnWidths();
             lvSessions.ColumnWidthChanged += (s, e) => { if (e.ColumnIndex != 2) AdjustSessionColumnWidths(); };
             lvSessions.KeyDown += LvSessions_KeyDown;
+            lvSessions.DoubleClick += LvSessions_DoubleClick;
             tabSessions.Controls.Add(lvSessions);
 
             btnReuploadSession = new FlatButton("Re-upload", 140, 36)
@@ -1116,6 +1117,122 @@ namespace BrBrDbTelemetry
                     item.Selected = true;
                 }
                 e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.Enter)
+            {
+                ShowSelectedSessionMetadata();
+                e.Handled = true;
+            }
+        }
+
+        private void LvSessions_DoubleClick(object sender, EventArgs e)
+        {
+            ShowSelectedSessionMetadata();
+        }
+
+        private void ShowSelectedSessionMetadata()
+        {
+            if (lvSessions.SelectedItems.Count == 0)
+                return;
+
+            var meta = lvSessions.SelectedItems[0].Tag as InstallManager.SessionMetadata;
+            if (meta == null || meta.FileInfo == null)
+                return;
+
+            ShowSessionMetadataDialog(meta);
+        }
+
+        private void ShowSessionMetadataDialog(InstallManager.SessionMetadata meta)
+        {
+            string headerText = InstallManager.GetSessionMetadataHeader(meta.FileInfo);
+
+            using (var dlg = new Form())
+            {
+                dlg.Text = "Session Metadata - " + meta.FileInfo.Name;
+                dlg.Size = new Size(640, 500);
+                dlg.MinimumSize = new Size(420, 300);
+                dlg.StartPosition = FormStartPosition.CenterParent;
+                dlg.BackColor = ColorBg;
+                dlg.ForeColor = ColorText;
+                dlg.Icon = this.Icon;
+                dlg.FormBorderStyle = FormBorderStyle.Sizable;
+                dlg.KeyPreview = true;
+
+                var lblHeader = new Label
+                {
+                    Text = "Session Metadata Header",
+                    Font = new Font("Segoe UI", 12, FontStyle.Bold),
+                    ForeColor = ColorAccent,
+                    Location = new Point(16, 14),
+                    AutoSize = true
+                };
+                dlg.Controls.Add(lblHeader);
+
+                var lblFilePath = new Label
+                {
+                    Text = "File: " + meta.FileInfo.FullName,
+                    Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
+                    ForeColor = ColorTextMuted,
+                    Location = new Point(16, 40),
+                    Size = new Size(dlg.ClientSize.Width - 32, 20),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                    AutoEllipsis = true
+                };
+                dlg.Controls.Add(lblFilePath);
+
+                var txtHeader = new TextBox
+                {
+                    Location = new Point(16, 66),
+                    Size = new Size(dlg.ClientSize.Width - 32, dlg.ClientSize.Height - 122),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+                    Multiline = true,
+                    ReadOnly = true,
+                    ScrollBars = ScrollBars.Both,
+                    WordWrap = false,
+                    BackColor = ColorInputBg,
+                    ForeColor = ColorText,
+                    BorderStyle = BorderStyle.FixedSingle,
+                    Font = new Font("Consolas", 9.5f),
+                    Text = headerText
+                };
+                dlg.Controls.Add(txtHeader);
+
+                var btnCopy = new FlatButton("Copy to Clipboard", 150, 34)
+                {
+                    Location = new Point(16, dlg.ClientSize.Height - 46),
+                    Anchor = AnchorStyles.Bottom | AnchorStyles.Left,
+                    BackColor = ColorInputBg
+                };
+                btnCopy.Click += (s, ev) =>
+                {
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(txtHeader.Text))
+                        {
+                            Clipboard.SetText(txtHeader.Text);
+                        }
+                    }
+                    catch { }
+                };
+                dlg.Controls.Add(btnCopy);
+
+                var btnCloseDlg = new FlatButton("Close", 110, 34)
+                {
+                    Location = new Point(dlg.ClientSize.Width - 126, dlg.ClientSize.Height - 46),
+                    Anchor = AnchorStyles.Bottom | AnchorStyles.Right,
+                    BackColor = ColorAccent
+                };
+                btnCloseDlg.Click += (s, ev) => dlg.Close();
+                dlg.Controls.Add(btnCloseDlg);
+
+                dlg.CancelButton = btnCloseDlg;
+                dlg.Shown += (s, ev) =>
+                {
+                    txtHeader.SelectionStart = 0;
+                    txtHeader.SelectionLength = 0;
+                };
+
+                dlg.ShowDialog(this);
             }
         }
 

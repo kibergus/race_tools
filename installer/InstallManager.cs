@@ -1347,6 +1347,131 @@ namespace BrBrDbTelemetry
             return meta;
         }
 
+        private static string ReadBrt1MetadataHeaderFromStream(Stream stream)
+        {
+            byte[] magicHdr = new byte[7];
+            if (!ReadExact(stream, magicHdr, 7) ||
+                magicHdr[0] != 4 || magicHdr[1] != 0 || magicHdr[2] != 1 ||
+                magicHdr[3] != (byte)'B' || magicHdr[4] != (byte)'R' || magicHdr[5] != (byte)'T' || magicHdr[6] != (byte)'1')
+            {
+                return "Invalid or corrupted BRT1 stream: missing BRT1 magic header.";
+            }
+
+            byte[] chunkHdr = new byte[3];
+            if (!ReadExact(stream, chunkHdr, 3) || chunkHdr[2] != 0x02)
+            {
+                return "Invalid or corrupted BRT1 stream: missing metadata JSON chunk (0x02).";
+            }
+
+            int len = chunkHdr[0] | (chunkHdr[1] << 8);
+            byte[] jsonBytes = new byte[len];
+            if (!ReadExact(stream, jsonBytes, len))
+            {
+                return "Invalid or corrupted BRT1 stream: truncated metadata JSON chunk.";
+            }
+
+            try
+            {
+                using (var doc = JsonDocument.Parse(jsonBytes))
+                {
+                    var options = new JsonSerializerOptions
+                    {
+                        WriteIndented = true,
+                        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                    };
+                    string formatted = JsonSerializer.Serialize(doc.RootElement, options);
+                    return formatted.Replace("\r\n", "\n").Replace("\n", Environment.NewLine);
+                }
+            }
+            catch
+            {
+                string raw = Encoding.UTF8.GetString(jsonBytes);
+                return raw.Replace("\r\n", "\n").Replace("\n", Environment.NewLine);
+            }
+        }
+
+        public static string GetSessionMetadataHeader(FileInfo file)
+        {
+            if (file == null || !file.Exists)
+                return "Session file does not exist.";
+
+            if (file.Name.EndsWith(".brt1.br", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    using (var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (var decompressor = new System.IO.Compression.BrotliStream(fs, System.IO.Compression.CompressionMode.Decompress))
+                    {
+                        return ReadBrt1MetadataHeaderFromStream(decompressor);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return "Error reading compressed BRT1 metadata header: " + ex.Message;
+                }
+            }
+
+            if (file.Extension.Equals(".brt1", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    using (var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        return ReadBrt1MetadataHeaderFromStream(fs);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return "Error reading BRT1 metadata header: " + ex.Message;
+                }
+            }
+
+            try
+            {
+                using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var reader = new StreamReader(stream))
+                {
+                    var headerLines = new List<string>();
+                    string line;
+                    int lineCount = 0;
+                    while ((line = reader.ReadLine()) != null && lineCount < 50)
+                    {
+                        lineCount++;
+                        string trimmed = line.Trim();
+                        if (string.IsNullOrEmpty(trimmed))
+                        {
+                            headerLines.Add(line);
+                            continue;
+                        }
+
+                        string[] parts = trimmed.Split(new char[] { ',' }, 2);
+                        if (parts.Length == 2 && parts[0].Trim().Equals("Time", StringComparison.OrdinalIgnoreCase) && parts[1].Contains(":"))
+                        {
+                            headerLines.Add(line);
+                            continue;
+                        }
+
+                        if (trimmed.StartsWith("Time,", StringComparison.OrdinalIgnoreCase))
+                        {
+                            headerLines.Add(line);
+                            break;
+                        }
+
+                        headerLines.Add(line);
+                    }
+
+                    if (headerLines.Count == 0)
+                        return "Session file is empty.";
+
+                    return string.Join(Environment.NewLine, headerLines);
+                }
+            }
+            catch (Exception ex)
+            {
+                return "Error reading CSV metadata header: " + ex.Message;
+            }
+        }
+
         public static void CompressBrotli(Stream input, Stream output, int quality = 4)
         {
             using (var encoder = new System.IO.Compression.BrotliEncoder(quality, 22))
