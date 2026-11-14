@@ -667,7 +667,7 @@ namespace BrBrDbTelemetry
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 9.5f)
             };
-            cbSinkType.Items.AddRange(new string[] { "file", "http" });
+            cbSinkType.Items.AddRange(new string[] { "file", "http", "command" });
             cbSinkType.SelectedIndexChanged += CbSinkType_SelectedIndexChanged;
             pnlSinkEdit.Controls.Add(lblType);
             pnlSinkEdit.Controls.Add(cbSinkType);
@@ -2266,16 +2266,28 @@ namespace BrBrDbTelemetry
         private void UpdateSinkFieldVisibility(string type)
         {
             bool isFile = (type == "file");
+            bool isHttp = (type == "http");
+            bool isCommand = (type == "command");
+
             lblSinkPath.Visible = isFile;
             txtSinkPath.Visible = isFile;
             btnBrowseSinkPath.Visible = isFile;
 
-            lblSinkServer.Visible = !isFile;
-            txtSinkServer.Visible = !isFile;
-            lblSinkServerHelp.Visible = !isFile;
-            lblSinkApiKey.Visible = !isFile;
-            txtSinkApiKey.Visible = !isFile;
-            lblSinkApiKeyHelp.Visible = !isFile;
+            lblSinkServer.Visible = isHttp || isCommand;
+            txtSinkServer.Visible = isHttp || isCommand;
+            lblSinkServerHelp.Visible = isHttp || isCommand;
+            if (isCommand)
+            {
+                lblSinkServerHelp.Text = "Local AUX app address (default: http://127.0.0.1:18920 for Spiker:bit).";
+            }
+            else
+            {
+                lblSinkServerHelp.Text = "Should be https://brbrdb.brbrkitten.com unless you stream to a custom server.";
+            }
+
+            lblSinkApiKey.Visible = isHttp;
+            txtSinkApiKey.Visible = isHttp;
+            lblSinkApiKeyHelp.Visible = isHttp;
         }
 
         private void CbSinkType_SelectedIndexChanged(object sender, EventArgs e)
@@ -2285,6 +2297,11 @@ namespace BrBrDbTelemetry
             {
                 string newType = cbSinkType.SelectedItem.ToString();
                 config.sinks[idx].type = newType;
+                if (newType == "command" && string.IsNullOrEmpty(config.sinks[idx].server_address))
+                {
+                    config.sinks[idx].server_address = "http://127.0.0.1:18920";
+                    txtSinkServer.Text = config.sinks[idx].server_address;
+                }
                 UpdateSinkFieldVisibility(newType);
                 lstSinks.Items[idx] = string.Format("Sink {0}: {1} ({2})", idx + 1, newType, config.sinks[idx].enabled ? "On" : "Off");
             }

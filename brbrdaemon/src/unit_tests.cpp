@@ -117,6 +117,12 @@ void TestConfigSerialization() {
   s2.enabled = false;
   cfg.sinks.push_back(s2);
 
+  SinkConfig s3;
+  s3.type = "command";
+  s3.serverAddress = "http://127.0.0.1:18920";
+  s3.enabled = true;
+  cfg.sinks.push_back(s3);
+
   DriverNameOverride dno;
   dno.carNameRegexp = "Porsche.*";
   dno.driverName = "Test Driver";
@@ -132,9 +138,10 @@ void TestConfigSerialization() {
   TEST_ASSERT(loaded.league == "unit_test_league", "League mismatch");
   TEST_ASSERT(loaded.pollingRateHz == 60, "Polling rate mismatch");
   TEST_ASSERT(loaded.carNameRegexp == "Ferrari.*", "Car regexp mismatch");
-  TEST_ASSERT(loaded.sinks.size() == 2, "Expected 2 sinks");
+  TEST_ASSERT(loaded.sinks.size() == 3, "Expected 3 sinks");
   TEST_ASSERT(loaded.sinks[0].type == "file" && loaded.sinks[0].path == "C:\\telemetry", "File sink mismatch");
   TEST_ASSERT(loaded.sinks[1].type == "http" && loaded.sinks[1].apiKey == "secret_key_123", "Http sink mismatch");
+  TEST_ASSERT(loaded.sinks[2].type == "command" && loaded.sinks[2].serverAddress == "http://127.0.0.1:18920", "Command sink mismatch");
   TEST_ASSERT(loaded.driverNameOverrides.size() == 1, "Driver override count mismatch");
   TEST_ASSERT(loaded.driverNameOverrides[0].driverName == "Test Driver", "Driver override name mismatch");
   TEST_ASSERT(loaded.simulators.size() == 2, "Expected 2 simulator overrides");
@@ -269,6 +276,15 @@ void TestFormatTelemetryLine() {
   TEST_ASSERT(line.find("11.00000,18.00000") != std::string::npos, "Should contain accurate tyre contact position");
   TEST_ASSERT(line.find(",25.00000,15.00000,2,") != std::string::npos, "Should contain clutch, handbrake, and gear");
   TEST_ASSERT(line.find("30.00000,20.00000") != std::string::npos, "Should contain road and air temp");
+
+  UnifiedGraphicInfo ug{};
+  ug.handbrakePercent = 0.15f;
+  ug.flag = static_cast<int>(AC_GREEN_FLAG);
+  std::vector<double> values;
+  std::string csvOut;
+  TelemetryCollector::ExtractTelemetryData(phys, ug, realTime, steadyStart, steadyNow, values, csvOut);
+  TEST_ASSERT(!values.empty(), "Extracted values should not be empty");
+  TEST_ASSERT(std::abs(values[0] - 1.5) < 1e-6, "BRT1 Time channel (values[0]) must be elapsed seconds since session start (1.5s)");
 }
 
 void TestTelemetryCollectorWithMockSim() {
@@ -789,6 +805,8 @@ void TestBrt1Protocol() {
   TEST_ASSERT(metaChunk[2] == static_cast<char>(Brt1ChunkType::MetadataJson), "Metadata chunk type should be 0x02");
   TEST_ASSERT(metaChunk.find("\"Class\":\"Unknown Class\"") != std::string::npos, "Metadata should fallback Class");
   TEST_ASSERT(metaChunk.find("\"Track name\":\"Unknown Track\"") != std::string::npos, "Metadata should fallback Track name");
+  TEST_ASSERT(metaChunk.find("\"track_name\"") == std::string::npos, "Metadata must not duplicate snake_case track_name");
+  TEST_ASSERT(metaChunk.find("\"driver_name\"") == std::string::npos, "Metadata must not duplicate snake_case driver_name");
 
   std::vector<double> sample1(62, 0.0);
   sample1[0] = 1000.0; // Time
@@ -878,6 +896,49 @@ void TestFileSinkBrotliBrt1() {
   std::filesystem::remove_all(tempLogDir, ec);
 }
 
+void TestCommandSinkSignalling() {
+  std::wstring tempLogDir = std::filesystem::temp_directory_path().wstring() + L"\\cmdsink_test_" +
+                            std::to_wstring(std::chrono::system_clock::now().time_since_epoch().count());
+  std::error_code ec;
+  std::filesystem::create_directories(tempLogDir, ec);
+  Logger logger(tempLogDir + L"\\cmd.log");
+
+  Sink::SessionMetadata meta;
+  meta.trackName = "Monza GP";
+  meta.date = "2026-11-11";
+  meta.time = "18:30:00";
+  meta.driverName = "NeuroDriver";
+  meta.league = "acevo";
+  meta.className = "GT3";
+  meta.sessionName = "Qualifying";
+  meta.sessionId = "sess-123";
+  meta.kartNumber = "42";
+
+  auto startTp = std::chrono::system_clock::from_time_t(1770000000);
+  std::string payload = CommandSink::BuildPayloadJson(
+      "active", startTp, "NeuroDriver_GT3_Monza", meta, "https://brbrdb.brbrkitten.com", "api_key_xyz");
+
+  TEST_ASSERT(payload.find("\"state\":\"active\"") != std::string::npos, "Payload must contain state active");
+  TEST_ASSERT(payload.find("\"Track name\":\"Monza GP\"") != std::string::npos, "Payload must contain Track name");
+  TEST_ASSERT(payload.find("\"Driver name\":\"NeuroDriver\"") != std::string::npos, "Payload must contain Driver name");
+  TEST_ASSERT(payload.find("\"Session ID\":\"sess-123\"") != std::string::npos, "Payload must contain Session ID");
+  TEST_ASSERT(payload.find("\"kart_number\":\"42\"") != std::string::npos, "Payload must contain kart_number");
+  TEST_ASSERT(payload.find("\"track_name\"") == std::string::npos, "Payload must not duplicate snake_case track_name");
+  TEST_ASSERT(payload.find("\"api_key\":\"api_key_xyz\"") != std::string::npos, "Payload must contain upload_target api_key");
+
+  // Also verify CommandSink against an unreachable local port does not block or throw
+  {
+    CommandSink sink("http://127.0.0.1:18999", "https://brbrdb.brbrkitten.com", "api_key_xyz",
+                     logger, std::chrono::milliseconds(10));
+    sink(Sink::StartSession{startTp, "tag", meta});
+    sink(Sink::Line{"header", true, {}});
+    sink(Sink::Line{"", false, {0.0, 1.0}});
+    sink(Sink::EndSession{});
+  }
+
+  std::filesystem::remove_all(tempLogDir, ec);
+}
+
 int main() {
   std::cout << "==================================================\n";
   std::cout << "Running Assetto Corsa / Evo / Rally Unit Tests...\n";
@@ -895,6 +956,7 @@ int main() {
   RUN_TEST(TestFormatTelemetryLine);
   RUN_TEST(TestBrt1Protocol);
   RUN_TEST(TestFileSinkBrotliBrt1);
+  RUN_TEST(TestCommandSinkSignalling);
   RUN_TEST(TestSessionStateTransitions);
   RUN_TEST(TestTelemetryCollectorWithMockSim);
   RUN_TEST(TestAcRallyTelemetryCollectorSession);

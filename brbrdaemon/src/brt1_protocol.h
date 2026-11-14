@@ -48,6 +48,7 @@ struct Brt1SessionMetadata {
   std::string league;
   std::string className;
   std::string sessionName;
+  std::string sessionId;
   std::string kartNumber;
   std::string trackConfiguration;
   std::string gameVersion;

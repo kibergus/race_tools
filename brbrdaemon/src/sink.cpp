@@ -27,6 +27,7 @@
 #include "net_utils.h"
 #include <winhttp.h>
 #include <brotli/encode.h>
+#include "thirdparty/nlohmann/json.hpp"
 
 namespace race_tools {
 
@@ -555,6 +556,188 @@ void HttpSink::WriteFinalChunk() {
   if (!WinHttpWriteData(hReq, chunk, static_cast<DWORD>(sizeof(chunk) - 1), &bytesWritten)) {
     throw std::runtime_error("WinHttpWriteData final chunk failed (error code " + std::to_string(GetLastError()) + ")");
   }
+}
+
+// -------------------------------------------------------------
+// CommandSink Implementation
+// -------------------------------------------------------------
+
+CommandSink::CommandSink(const std::string& auxAddress,
+                         const std::string& uploadServerAddress,
+                         const std::string& uploadApiKey,
+                         Logger& logger,
+                         std::chrono::milliseconds heartbeatInterval)
+    : auxAddress_(auxAddress.empty() ? "http://127.0.0.1:18920" : auxAddress),
+      uploadServerAddress_(uploadServerAddress),
+      uploadApiKey_(uploadApiKey),
+      logger_(logger),
+      heartbeatInterval_(heartbeatInterval) {}
+
+CommandSink::~CommandSink() {
+  Abort();
+}
+
+void CommandSink::Abort() {
+  aborted_ = true;
+  std::lock_guard<std::mutex> lock(handleMutex_);
+  if (hSession_) {
+    WinHttpCloseHandle(hSession_);
+    hSession_ = nullptr;
+  }
+}
+
+std::string CommandSink::BuildPayloadJson(const std::string& state,
+                                          std::chrono::system_clock::time_point sessionStartTime,
+                                          const std::string& participantTag,
+                                          const Brt1SessionMetadata& metadata,
+                                          const std::string& uploadServerAddress,
+                                          const std::string& uploadApiKey) {
+  nlohmann::json payload;
+  payload["state"] = state;
+  auto startMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+      sessionStartTime.time_since_epoch()).count();
+  payload["session_start_unix_ms"] = startMs;
+  payload["participant_tag"] = participantTag;
+
+  nlohmann::json metaObj = nlohmann::json::object();
+  std::string resolvedTrack = metadata.trackName.empty() ? "Unknown Track" : metadata.trackName;
+  std::string resolvedDriver = metadata.driverName.empty() ? "Unknown Driver" : metadata.driverName;
+  std::string resolvedLeague = metadata.league.empty() ? "kartsim" : metadata.league;
+  std::string resolvedClass = metadata.className.empty() ? "Unknown Class" : metadata.className;
+  std::string resolvedSession = metadata.sessionName.empty() ? "Practice" : metadata.sessionName;
+
+  metaObj["Track name"] = resolvedTrack;
+  metaObj["Date"] = metadata.date;
+  metaObj["Time"] = metadata.time;
+  metaObj["Driver name"] = resolvedDriver;
+  metaObj["League"] = resolvedLeague;
+  metaObj["Class"] = resolvedClass;
+  metaObj["Session"] = resolvedSession;
+
+  if (!metadata.sessionId.empty()) {
+    metaObj["Session ID"] = metadata.sessionId;
+  }
+  if (!metadata.kartNumber.empty()) {
+    metaObj["kart_number"] = metadata.kartNumber;
+  }
+  if (!metadata.trackConfiguration.empty()) {
+    metaObj["Track configuration"] = metadata.trackConfiguration;
+  }
+  payload["metadata"] = metaObj;
+
+  nlohmann::json targetObj = nlohmann::json::object();
+  targetObj["server_address"] = uploadServerAddress;
+  targetObj["api_key"] = uploadApiKey;
+  payload["upload_target"] = targetObj;
+
+  return payload.dump();
+}
+
+void CommandSink::operator()(const StartSession& start) {
+  sessionStartTime_ = start.sessionStartTime;
+  participantTag_ = start.participantTag;
+  metadata_ = start.metadata;
+  sessionActive_ = true;
+  aborted_ = false;
+  lastHeartbeatTime_ = std::chrono::steady_clock::now();
+
+  logger_.Write("CommandSink - Signalling session start to AUX app at " + auxAddress_);
+  SendCommand("/api/session/heartbeat", "active");
+}
+
+void CommandSink::operator()(const Line& line) {
+  if (aborted_ || !sessionActive_ || line.is_header) {
+    return;
+  }
+  auto now = std::chrono::steady_clock::now();
+  if ((now - lastHeartbeatTime_) >= heartbeatInterval_) {
+    lastHeartbeatTime_ = now;
+    SendCommand("/api/session/heartbeat", "active");
+  }
+}
+
+void CommandSink::operator()(const EndSession& end) {
+  (void)end;
+  if (!sessionActive_) {
+    return;
+  }
+  sessionActive_ = false;
+  if (!aborted_) {
+    logger_.Write("CommandSink - Signalling session stop to AUX app at " + auxAddress_);
+    SendCommand("/api/session/stop", "stopped");
+  }
+}
+
+bool CommandSink::SendCommand(const std::string& endpoint, const std::string& state) {
+  if (aborted_) return false;
+
+  ServerAddressInfo addrInfo = ParseServerAddress(auxAddress_);
+  if (addrInfo.host.empty()) {
+    return false;
+  }
+
+  std::string body = BuildPayloadJson(
+      state, sessionStartTime_, participantTag_, metadata_, uploadServerAddress_, uploadApiKey_);
+
+  HINTERNET hSession = nullptr;
+  HINTERNET hConnect = nullptr;
+  HINTERNET hRequest = nullptr;
+  bool ok = false;
+
+  try {
+    hSession = WinHttpOpen(L"BrBrDbCommandSink/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
+                           WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession) return false;
+
+    {
+      std::lock_guard<std::mutex> lock(handleMutex_);
+      if (aborted_) {
+        WinHttpCloseHandle(hSession);
+        return false;
+      }
+      hSession_ = hSession;
+    }
+
+    WinHttpSetTimeouts(hSession, 500, 500, 500, 500);
+
+    hConnect = WinHttpConnect(hSession, addrInfo.host.c_str(), addrInfo.port, 0);
+    if (hConnect) {
+      DWORD flags = addrInfo.useHttps ? WINHTTP_FLAG_SECURE : 0;
+      std::wstring wEndpoint = Utf8ToWide(endpoint);
+      hRequest = WinHttpOpenRequest(hConnect, L"POST", wEndpoint.c_str(), NULL,
+                                    WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+      if (hRequest) {
+        std::wstring headers = L"Content-Type: application/json\r\n";
+        BOOL sent = WinHttpSendRequest(
+            hRequest, headers.c_str(), static_cast<DWORD>(-1),
+            const_cast<char*>(body.data()), static_cast<DWORD>(body.size()),
+            static_cast<DWORD>(body.size()), 0);
+        if (sent && WinHttpReceiveResponse(hRequest, NULL)) {
+          DWORD statusCode = 0;
+          DWORD statusCodeSize = sizeof(statusCode);
+          if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                  WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize,
+                                  WINHTTP_NO_HEADER_INDEX)) {
+            ok = (statusCode >= 200 && statusCode < 300);
+          }
+        }
+      }
+    }
+  } catch (...) {
+    ok = false;
+  }
+
+  if (hRequest) WinHttpCloseHandle(hRequest);
+  if (hConnect) WinHttpCloseHandle(hConnect);
+  {
+    std::lock_guard<std::mutex> lock(handleMutex_);
+    if (hSession_) {
+      WinHttpCloseHandle(hSession_);
+      hSession_ = nullptr;
+    }
+  }
+
+  return ok;
 }
 
 // -------------------------------------------------------------

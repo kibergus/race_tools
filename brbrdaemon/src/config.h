@@ -27,9 +27,9 @@ struct DriverNameOverride {
 };
 
 struct SinkConfig {
-  std::string type; // "file" or "http"
+  std::string type; // "file", "http", or "command"
   std::string path; // for file sink
-  std::string serverAddress; // for http sink
+  std::string serverAddress; // for http or command sink
   std::string apiKey; // for http sink
   bool enabled = true;
   int maxRetries = 10;

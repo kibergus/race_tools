@@ -240,7 +240,7 @@ void TelemetryCollector::ExtractTelemetryData(
             gm_tm.tm_year + 1900, gm_tm.tm_mon + 1, gm_tm.tm_mday,
             gm_tm.tm_hour, gm_tm.tm_min, gm_tm.tm_sec, static_cast<int>(millis));
 
-  double timeSeconds = std::chrono::duration<double>(duration).count();
+  double timeSeconds = elapsedSec;
 
   // 2. Position: x, z
   double posX = 0.0, posZ = 0.0;
@@ -463,6 +463,17 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
                     SanitizeFilename(fullTrackName) + "_" +
                     SanitizeFilename(sessionType);
 
+  // Resolve primary HTTP sink target so CommandSink can pass upload_target to AUX apps
+  std::string primaryUploadServer = "https://brbrdb.brbrkitten.com";
+  std::string primaryUploadApiKey = "";
+  for (const auto& s : config_.sinks) {
+    if (s.type == "http") {
+      if (!s.serverAddress.empty()) primaryUploadServer = s.serverAddress;
+      if (!s.apiKey.empty()) primaryUploadApiKey = s.apiKey;
+      if (s.enabled) break;
+    }
+  }
+
   // Initialize Sinks
   // File names are derived only from session data, so two file sinks pointing at the
   // same directory would open (and truncate) the same CSV. Skip such duplicates.
@@ -496,6 +507,10 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
                                      8,
                                      std::chrono::seconds(60),
                                      sinkConf.maxRetries),
+          sessionQueue_->reader()));
+    } else if (sinkConf.type == "command") {
+      sinkWorkers_.push_back(std::make_unique<SinkWorker>(
+          std::make_unique<CommandSink>(sinkConf.serverAddress, primaryUploadServer, primaryUploadApiKey, logger_),
           sessionQueue_->reader()));
     }
   }
@@ -552,7 +567,7 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
   ss << "Class," << EscapeCsvMetadata(carName) << "\n";
   ss << "Session," << EscapeCsvMetadata(sessionType) << "\n";
   if (!carNumber.empty()) {
-    ss << "Kart number," << EscapeCsvMetadata(carNumber) << "\n";
+    ss << "kart_number," << EscapeCsvMetadata(carNumber) << "\n";
   }
   if (!gameVersion.empty()) {
     ss << "Game version," << EscapeCsvMetadata(gameVersion) << "\n";

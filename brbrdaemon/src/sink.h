@@ -185,6 +185,50 @@ private:
   bool Finalize();
 };
 
+// Lightweight command sink that signals session lifecycle and metadata to a local AUX app
+// (e.g., Spiker:bit) via HTTP POST without sending full telemetry lines.
+class CommandSink : public Sink {
+public:
+  CommandSink(const std::string& auxAddress,
+              const std::string& uploadServerAddress,
+              const std::string& uploadApiKey,
+              Logger& logger,
+              std::chrono::milliseconds heartbeatInterval = std::chrono::milliseconds(3000));
+  virtual ~CommandSink() override;
+
+  virtual void operator()(const StartSession& start) override;
+  virtual void operator()(const Line& line) override;
+  virtual void operator()(const EndSession& end) override;
+
+  virtual void Abort() override;
+
+  static std::string BuildPayloadJson(const std::string& state,
+                                      std::chrono::system_clock::time_point sessionStartTime,
+                                      const std::string& participantTag,
+                                      const Brt1SessionMetadata& metadata,
+                                      const std::string& uploadServerAddress,
+                                      const std::string& uploadApiKey);
+
+private:
+  std::string auxAddress_;
+  std::string uploadServerAddress_;
+  std::string uploadApiKey_;
+  Logger& logger_;
+  std::chrono::milliseconds heartbeatInterval_;
+
+  std::chrono::system_clock::time_point sessionStartTime_;
+  std::string participantTag_;
+  Brt1SessionMetadata metadata_;
+  std::chrono::steady_clock::time_point lastHeartbeatTime_;
+  bool sessionActive_ = false;
+  std::atomic<bool> aborted_{false};
+
+  std::mutex handleMutex_;
+  HINTERNET hSession_ = nullptr;
+
+  bool SendCommand(const std::string& endpoint, const std::string& state);
+};
+
 // Runs a background thread that pops telemetry messages from a queue reader and
 // dispatches them to a specific Sink implementation with an exception boundary.
 class SinkWorker {

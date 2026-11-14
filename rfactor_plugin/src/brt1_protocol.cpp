@@ -121,26 +121,22 @@ std::string Brt1StreamEncoder::EncodeMetadataChunk(const Brt1SessionMetadata& me
 
   nlohmann::json j;
   nlohmann::json meta = {
-    {"track_name", trackName},
     {"Track name", trackName},
-    {"date", metadata.date},
     {"Date", metadata.date},
-    {"time", metadata.time},
     {"Time", metadata.time},
-    {"driver_name", driverName},
     {"Driver name", driverName},
-    {"league", league},
     {"League", league},
-    {"class", className},
-    {"class_name", className},
     {"Class", className},
-    {"session", sessionName},
-    {"session_name", sessionName},
     {"Session", sessionName}
   };
+  if (!metadata.sessionId.empty()) {
+    meta["Session ID"] = metadata.sessionId;
+  }
   if (!metadata.kartNumber.empty()) {
     meta["kart_number"] = metadata.kartNumber;
-    meta["Kart number"] = metadata.kartNumber;
+  }
+  if (!metadata.trackConfiguration.empty()) {
+    meta["Track configuration"] = metadata.trackConfiguration;
   }
   j["metadata"] = meta;
 
@@ -305,14 +301,16 @@ Brt1StreamDecoder::StepResult Brt1StreamDecoder::Step(std::unordered_map<std::st
       auto j = nlohmann::json::parse(payload);
       if (j.contains("metadata") && j["metadata"].is_object()) {
         const auto& m = j["metadata"];
-        metadata_.trackName = m.value("track_name", "");
-        metadata_.date = m.value("date", "");
-        metadata_.time = m.value("time", "");
-        metadata_.driverName = m.value("driver_name", "");
-        metadata_.league = m.value("league", "");
-        metadata_.className = m.value("class_name", "");
-        metadata_.sessionName = m.value("session_name", "");
+        metadata_.trackName = m.value("Track name", "");
+        metadata_.date = m.value("Date", "");
+        metadata_.time = m.value("Time", "");
+        metadata_.driverName = m.value("Driver name", "");
+        metadata_.league = m.value("League", "");
+        metadata_.className = m.value("Class", "");
+        metadata_.sessionName = m.value("Session", "");
+        metadata_.sessionId = m.value("Session ID", "");
         metadata_.kartNumber = m.value("kart_number", "");
+        metadata_.trackConfiguration = m.value("Track configuration", "");
       }
       channels_.clear();
       if (j.contains("channels") && j["channels"].is_array()) {

@@ -1,0 +1,22 @@
+{
+  "name": "spikerbit-brt1-firmware",
+  "version": "1.0.0",
+  "description": "500 Hz Hardware Timer + PPI + SAADC EasyDMA native BRT1 neuro-telemetry streamer for Backyard Brains Spiker:bit on BBC micro:bit V2",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "core": "*"
+  },
+  "files": [
+    "README.md",
+    "main.cpp"
+  ],
+  "public": true,
+  "targetVersions": {
+    "target": "6.0.28",
+    "targetId": "microbit"
+  },
+  "supportedTargets": [
+    "microbit"
+  ],
+  "preferredEditor": "cppProject"
+}

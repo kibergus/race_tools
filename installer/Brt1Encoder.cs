@@ -94,48 +94,41 @@ namespace BrBrDbTelemetry
 
         public static void WriteMetadataChunk(Stream output, Dictionary<string, string> metadata, List<Brt1Channel> channels)
         {
-            string trackName = metadata.GetValueOrDefault("Track name", metadata.GetValueOrDefault("track_name", "Unknown Track"));
-            string trackConfig = metadata.GetValueOrDefault("Track configuration", metadata.GetValueOrDefault("track_configuration", ""));
-            string date = metadata.GetValueOrDefault("Date", metadata.GetValueOrDefault("date", ""));
-            string time = metadata.GetValueOrDefault("Time", metadata.GetValueOrDefault("time", ""));
-            string driverName = metadata.GetValueOrDefault("Driver name", metadata.GetValueOrDefault("driver_name", "Unknown Driver"));
-            string league = metadata.GetValueOrDefault("League", metadata.GetValueOrDefault("league", "kartsim"));
-            string className = metadata.GetValueOrDefault("Class", metadata.GetValueOrDefault("class", metadata.GetValueOrDefault("class_name", "Unknown Class")));
-            string session = metadata.GetValueOrDefault("Session", metadata.GetValueOrDefault("session", metadata.GetValueOrDefault("session_name", "Practice")));
-            string kartNumber = metadata.GetValueOrDefault("Kart number", metadata.GetValueOrDefault("kart_number", ""));
+            string trackName = metadata.GetValueOrDefault("Track name", "Unknown Track");
+            string trackConfig = metadata.GetValueOrDefault("Track configuration", "");
+            string date = metadata.GetValueOrDefault("Date", "");
+            string time = metadata.GetValueOrDefault("Time", "");
+            string driverName = metadata.GetValueOrDefault("Driver name", "Unknown Driver");
+            string league = metadata.GetValueOrDefault("League", "kartsim");
+            string className = metadata.GetValueOrDefault("Class", "Unknown Class");
+            string session = metadata.GetValueOrDefault("Session", "Practice");
+            string sessionId = metadata.GetValueOrDefault("Session ID", metadata.GetValueOrDefault("session_id", ""));
+            string kartNumber = metadata.GetValueOrDefault("kart_number", metadata.GetValueOrDefault("Kart number", ""));
 
             var metaObj = new Dictionary<string, object>
             {
-                ["track_name"] = trackName,
                 ["Track name"] = trackName,
-                ["date"] = date,
                 ["Date"] = date,
-                ["time"] = time,
                 ["Time"] = time,
-                ["driver_name"] = driverName,
                 ["Driver name"] = driverName,
-                ["league"] = league,
                 ["League"] = league,
-                ["class"] = className,
-                ["class_name"] = className,
                 ["Class"] = className,
-                ["session"] = session,
-                ["session_name"] = session,
                 ["Session"] = session
             };
+
+            if (!string.IsNullOrEmpty(sessionId))
+            {
+                metaObj["Session ID"] = sessionId;
+            }
 
             if (!string.IsNullOrEmpty(kartNumber))
             {
                 metaObj["kart_number"] = kartNumber;
-                metaObj["Kart number"] = kartNumber;
             }
 
             if (!string.IsNullOrEmpty(trackConfig))
             {
-                metaObj["track_configuration"] = trackConfig;
                 metaObj["Track configuration"] = trackConfig;
-                metaObj["track_layout"] = trackConfig;
-                metaObj["Track layout"] = trackConfig;
             }
 
             var channelsList = new List<object>();
@@ -242,6 +235,21 @@ namespace BrBrDbTelemetry
                 // 2. Write Metadata JSON chunk
                 WriteMetadataChunk(brt1Output, metadata, channels);
 
+                double? sessionStartEpochSec = null;
+                if (metadata.TryGetValue("Date", out string metaDate) &&
+                    metadata.TryGetValue("Time", out string metaTime) &&
+                    !string.IsNullOrWhiteSpace(metaDate) &&
+                    !string.IsNullOrWhiteSpace(metaTime))
+                {
+                    string isoStart = metaDate.Trim() + "T" + metaTime.Trim() + "Z";
+                    if (DateTimeOffset.TryParse(isoStart, CultureInfo.InvariantCulture,
+                                                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                                                out DateTimeOffset startDto))
+                    {
+                        sessionStartEpochSec = startDto.ToUnixTimeMilliseconds() / 1000.0;
+                    }
+                }
+
                 // 3. Process telemetry data rows
                 int m = channels.Count;
                 bool hasBaseline = false;
@@ -265,12 +273,17 @@ namespace BrBrDbTelemetry
                             string token = tokens[j].Trim();
                             if (j == 0)
                             {
-                                // First column is Time. May be ISO-8601 or numeric seconds.
+                                // First column is Time. May be ISO-8601 or numeric seconds elapsed since session start.
                                 if (DateTimeOffset.TryParse(token, CultureInfo.InvariantCulture,
                                                             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
                                                             out DateTimeOffset dto))
                                 {
-                                    currentValues[0] = dto.ToUnixTimeMilliseconds() / 1000.0;
+                                    double sampleEpochSec = dto.ToUnixTimeMilliseconds() / 1000.0;
+                                    if (!sessionStartEpochSec.HasValue)
+                                    {
+                                        sessionStartEpochSec = sampleEpochSec;
+                                    }
+                                    currentValues[0] = sampleEpochSec - sessionStartEpochSec.Value;
                                 }
                                 else if (double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out double d))
                                 {

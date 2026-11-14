@@ -45,7 +45,9 @@ struct Brt1SessionMetadata {
   std::string league;
   std::string className;
   std::string sessionName;
+  std::string sessionId;
   std::string kartNumber;
+  std::string trackConfiguration;
 };
 
 // Returns standard 61 channels for rFactor telemetry

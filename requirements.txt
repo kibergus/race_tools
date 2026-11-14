@@ -1,5 +1,9 @@
 pandas>=1.0.0
 numpy>=1.18.0
+scipy>=1.7.0
 pygame>=2.0.0
 screeninfo>=0.8.0
+brotli>=1.0.9
+pyserial>=3.5
+bleak>=0.22.0
 evdev>=1.6.0; sys_platform == 'linux'

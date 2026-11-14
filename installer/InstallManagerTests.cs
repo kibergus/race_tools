@@ -561,6 +561,7 @@ namespace BrBrDbTelemetry
                 };
                 config.sinks.Add(new SinkConfig { type = "file", path = Path.Combine(tempDir, "Telemetry"), enabled = true });
                 config.sinks.Add(new SinkConfig { type = "http", server_address = "https://example.com", api_key = "abc", enabled = true });
+                config.sinks.Add(new SinkConfig { type = "command", server_address = "http://127.0.0.1:18920", enabled = true });
 
                 string json = ConfigHelper.Serialize(config);
                 File.WriteAllText(configPath, json, System.Text.Encoding.UTF8);
@@ -568,9 +569,10 @@ namespace BrBrDbTelemetry
                 var loaded = ConfigHelper.Deserialize(File.ReadAllText(configPath));
                 Assert(loaded.league == "acevo", "League should match");
                 Assert(loaded.car_name_regexp == "GT3.*", "Car regexp should match");
-                Assert(loaded.sinks.Count == 2, "Should have 2 sinks");
+                Assert(loaded.sinks.Count == 3, "Should have 3 sinks");
                 Assert(loaded.sinks[0].type == "file", "First sink should be file");
                 Assert(loaded.sinks[1].type == "http", "Second sink should be http");
+                Assert(loaded.sinks[2].type == "command" && loaded.sinks[2].server_address == "http://127.0.0.1:18920", "Third sink should be command with default address");
             }
             finally
             {
@@ -800,8 +802,12 @@ namespace BrBrDbTelemetry
                 string metaJson = System.Text.Encoding.UTF8.GetString(bytes, offset + 3, metaLen);
                 using (var doc = System.Text.Json.JsonDocument.Parse(metaJson))
                 {
-                    Assert(doc.RootElement.GetProperty("metadata").GetProperty("track_name").GetString() == "Rowrah", "Track name must be Rowrah");
-                    Assert(doc.RootElement.GetProperty("metadata").GetProperty("driver_name").GetString() == "Kibergus", "Driver name must be Kibergus");
+                    var metaElem = doc.RootElement.GetProperty("metadata");
+                    Assert(metaElem.GetProperty("Track name").GetString() == "Rowrah", "Track name must be Rowrah");
+                    Assert(metaElem.GetProperty("Driver name").GetString() == "Kibergus", "Driver name must be Kibergus");
+                    Assert(metaElem.GetProperty("kart_number").GetString() == "55", "kart_number must be 55");
+                    Assert(!metaElem.TryGetProperty("track_name", out _), "Metadata must not duplicate snake_case track_name");
+                    Assert(!metaElem.TryGetProperty("driver_name", out _), "Metadata must not duplicate snake_case driver_name");
                     Assert(doc.RootElement.GetProperty("channels").GetArrayLength() == 5, "Must declare 5 channels");
                 }
                 offset += 3 + metaLen;
@@ -810,6 +816,8 @@ namespace BrBrDbTelemetry
                 int baseLen = bytes[offset] | (bytes[offset + 1] << 8);
                 Assert(baseLen == 40, "Baseline chunk must be 40 bytes for 5 double channels");
                 Assert(bytes[offset + 2] == 0x03, "Third chunk must be Baseline chunk (Type 0x03)");
+                double firstTime = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(new ReadOnlySpan<byte>(bytes, offset + 3, 8));
+                Assert(Math.Abs(firstTime - 0.0) < 1e-6, "First Time sample must be 0.0s elapsed since session start");
                 double firstX = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(new ReadOnlySpan<byte>(bytes, offset + 3 + 8, 8));
                 Assert(Math.Abs(firstX - 10.5) < 1e-4, "First X sample must be 10.5");
                 offset += 3 + baseLen;
@@ -818,6 +826,8 @@ namespace BrBrDbTelemetry
                 int deltaLen = bytes[offset] | (bytes[offset + 1] << 8);
                 Assert(deltaLen == 10, "Delta chunk must be 10 bytes for 5 channels");
                 Assert(bytes[offset + 2] == 0x04, "Fourth chunk must be Delta chunk (Type 0x04)");
+                short deltaTimeTicks = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(new ReadOnlySpan<byte>(bytes, offset + 3, 2));
+                Assert(deltaTimeTicks == 10, "Second Time sample delta (+0.010s at scale 0.001) must be 10 ticks");
                 offset += 3 + deltaLen;
 
                 // 5. EOS chunk: len 0, type 0xFF
@@ -975,9 +985,10 @@ namespace BrBrDbTelemetry
                     Brt1Encoder.ConvertCsvToBrt1Stream(csvMs, fs);
                 }
                 string brt1Header = InstallManager.GetSessionMetadataHeader(new FileInfo(brt1Path));
-                Assert(brt1Header.Contains("\"track_name\": \"Silverstone GP\""), "BRT1 header should contain pretty-printed track_name");
-                Assert(brt1Header.Contains("\"driver_name\": \"TestDriver\""), "BRT1 header should contain driver_name");
-                Assert(brt1Header.Contains("\"league\": \"acevo\""), "BRT1 header should contain league");
+                Assert(brt1Header.Contains("\"Track name\": \"Silverstone GP\""), "BRT1 header should contain pretty-printed Track name");
+                Assert(brt1Header.Contains("\"Driver name\": \"TestDriver\""), "BRT1 header should contain Driver name");
+                Assert(brt1Header.Contains("\"League\": \"acevo\""), "BRT1 header should contain League");
+                Assert(!brt1Header.Contains("\"track_name\""), "BRT1 header should not duplicate snake_case track_name");
                 Assert(brt1Header.Contains("\"channels\""), "BRT1 header should contain channels array");
 
                 // 3. Test .brt1.br metadata header
@@ -988,9 +999,9 @@ namespace BrBrDbTelemetry
                     InstallManager.CompressBrotli(brt1Fs, brt1BrFs, quality: 4);
                 }
                 string brt1BrHeader = InstallManager.GetSessionMetadataHeader(new FileInfo(brt1BrPath));
-                Assert(brt1BrHeader.Contains("\"track_name\": \"Silverstone GP\""), "BRT1.br header should contain pretty-printed track_name");
-                Assert(brt1BrHeader.Contains("\"driver_name\": \"TestDriver\""), "BRT1.br header should contain driver_name");
-                Assert(brt1BrHeader.Contains("\"league\": \"acevo\""), "BRT1.br header should contain league");
+                Assert(brt1BrHeader.Contains("\"Track name\": \"Silverstone GP\""), "BRT1.br header should contain pretty-printed Track name");
+                Assert(brt1BrHeader.Contains("\"Driver name\": \"TestDriver\""), "BRT1.br header should contain Driver name");
+                Assert(brt1BrHeader.Contains("\"League\": \"acevo\""), "BRT1.br header should contain League");
 
                 // 4. Test missing file
                 string missingHeader = InstallManager.GetSessionMetadataHeader(new FileInfo(Path.Combine(tempDir, "missing.brt1.br")));

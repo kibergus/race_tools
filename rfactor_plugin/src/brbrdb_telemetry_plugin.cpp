@@ -467,6 +467,17 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
         }
       }
 
+      // Resolve primary HTTP sink target so CommandSink can pass upload_target to AUX apps
+      std::string primaryUploadServer = "https://brbrdb.brbrkitten.com";
+      std::string primaryUploadApiKey = "";
+      for (const auto& s : config_.sinks) {
+        if (s.type == "http") {
+          if (!s.serverAddress.empty()) primaryUploadServer = s.serverAddress;
+          if (!s.apiKey.empty()) primaryUploadApiKey = s.apiKey;
+          if (s.enabled) break;
+        }
+      }
+
       // Initialize Sinks for this session
       for (const auto& sinkConf : config_.sinks) {
         if (!sinkConf.enabled) {
@@ -492,6 +503,10 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
                                          8,
                                          std::chrono::seconds(60),
                                          sinkConf.maxRetries),
+              session->csvQueue.reader()));
+        } else if (sinkConf.type == "command") {
+          session->sinkWorkers.push_back(std::make_unique<SinkWorker>(
+              std::make_unique<CommandSink>(sinkConf.serverAddress, primaryUploadServer, primaryUploadApiKey, logger_),
               session->csvQueue.reader()));
         }
       }
@@ -527,7 +542,7 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
       ss << "Class," << (session->vehicleClass.empty() ? "Unknown Class" : session->vehicleClass) << "\n";
       ss << "Session," << session->sessionType << "\n";
       if (!session->kartNumber.empty()) {
-        ss << "Kart number," << session->kartNumber << "\n";
+        ss << "kart_number," << session->kartNumber << "\n";
       }
       ss << "\n"; // Blank line separating metadata header and telemetry rows
       session->csvQueue.Push(Sink::Line{ss.str(), /*isHeader=*/true});
@@ -587,7 +602,7 @@ void BrBrDbTelemetryPlugin::ExtractTelemetryData(
   sprintf_s(timeStr, "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", gm_tm.tm_year + 1900, gm_tm.tm_mon + 1, gm_tm.tm_mday,
             gm_tm.tm_hour, gm_tm.tm_min, gm_tm.tm_sec, static_cast<int>(millis));
 
-  double timeSeconds = std::chrono::duration<double>(duration).count();
+  double timeSeconds = elapsedDiff;
 
   // 2. Speed (magnitude of local velocity vector)
   double speed = sqrt(info.mLocalVel.x * info.mLocalVel.x + info.mLocalVel.y * info.mLocalVel.y +

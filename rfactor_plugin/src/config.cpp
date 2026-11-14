@@ -127,6 +127,17 @@ PluginConfig LoadPluginConfig(const std::wstring& path) {
           }
           sink.bufferDurationMinutes = item["buffer_duration_minutes"].get<int>();
         }
+      } else if (sink.type == "command") {
+        sink.serverAddress = "http://127.0.0.1:18920";
+        if (item.contains("server_address")) {
+          if (!item["server_address"].is_string()) {
+            throw std::runtime_error("Field 'server_address' in command sink must be a string");
+          }
+          std::string addr = item["server_address"].get<std::string>();
+          if (!addr.empty()) {
+            sink.serverAddress = addr;
+          }
+        }
       } else {
         throw std::runtime_error("Unknown sink type: " + sink.type);
       }
@@ -182,6 +193,8 @@ void SavePluginConfig(const std::wstring& path, const PluginConfig& config) {
       item_json["api_key"] = item.apiKey;
       item_json["max_retries"] = item.maxRetries;
       item_json["buffer_duration_minutes"] = item.bufferDurationMinutes;
+    } else if (item.type == "command") {
+      item_json["server_address"] = item.serverAddress.empty() ? "http://127.0.0.1:18920" : item.serverAddress;
     }
     sinks_arr.push_back(item_json);
   }

@@ -1234,11 +1234,11 @@ namespace BrBrDbTelemetry
                                     {
                                         if (doc.RootElement.TryGetProperty("metadata", out var metaProp))
                                         {
-                                            if (metaProp.TryGetProperty("track_name", out var tp) || metaProp.TryGetProperty("Track name", out tp))
+                                            if (metaProp.TryGetProperty("Track name", out var tp) || metaProp.TryGetProperty("track_name", out tp))
                                                 meta.Track = tp.GetString();
-                                            if (metaProp.TryGetProperty("date", out var dp) || metaProp.TryGetProperty("Date", out dp))
+                                            if (metaProp.TryGetProperty("Date", out var dp) || metaProp.TryGetProperty("date", out dp))
                                                 meta.Date = dp.GetString();
-                                            if (metaProp.TryGetProperty("time", out var tmp) || metaProp.TryGetProperty("Time", out tmp))
+                                            if (metaProp.TryGetProperty("Time", out var tmp) || metaProp.TryGetProperty("time", out tmp))
                                                 meta.Time = tmp.GetString();
                                         }
                                     }
@@ -1273,11 +1273,11 @@ namespace BrBrDbTelemetry
                                     {
                                         if (doc.RootElement.TryGetProperty("metadata", out var metaProp))
                                         {
-                                            if (metaProp.TryGetProperty("track_name", out var tp) || metaProp.TryGetProperty("Track name", out tp))
+                                            if (metaProp.TryGetProperty("Track name", out var tp) || metaProp.TryGetProperty("track_name", out tp))
                                                 meta.Track = tp.GetString();
-                                            if (metaProp.TryGetProperty("date", out var dp) || metaProp.TryGetProperty("Date", out dp))
+                                            if (metaProp.TryGetProperty("Date", out var dp) || metaProp.TryGetProperty("date", out dp))
                                                 meta.Date = dp.GetString();
-                                            if (metaProp.TryGetProperty("time", out var tmp) || metaProp.TryGetProperty("Time", out tmp))
+                                            if (metaProp.TryGetProperty("Time", out var tmp) || metaProp.TryGetProperty("time", out tmp))
                                                 meta.Time = tmp.GetString();
                                         }
                                     }

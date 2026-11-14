@@ -145,6 +145,11 @@ namespace BrBrDbTelemetry
                     sb.AppendLine(",\n            \"server_address\": " + EscapeString(sink.server_address) + ",");
                     sb.AppendLine("            \"api_key\": " + EscapeString(sink.api_key));
                 }
+                else if (sink.type == "command")
+                {
+                    string addr = string.IsNullOrEmpty(sink.server_address) ? "http://127.0.0.1:18920" : sink.server_address;
+                    sb.AppendLine(",\n            \"server_address\": " + EscapeString(addr));
+                }
                 sb.Append("        }");
                 if (i < config.sinks.Count - 1) sb.AppendLine(",");
                 else sb.AppendLine();
@@ -244,6 +249,8 @@ namespace BrBrDbTelemetry
                                         sink.server_address = (string)sinkDict["server_address"];
                                     if (sinkDict.ContainsKey("api_key") && sinkDict["api_key"] is string)
                                         sink.api_key = (string)sinkDict["api_key"];
+                                    if (sink.type == "command" && string.IsNullOrEmpty(sink.server_address))
+                                        sink.server_address = "http://127.0.0.1:18920";
 
                                     config.sinks.Add(sink);
                                 }

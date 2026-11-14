@@ -30,6 +30,8 @@ dependencies = [
     "scipy>=1.7.0",
     "pygame>=2.0.0",
     "screeninfo>=0.8.0",
+    "brotli>=1.0.9",
+    "pyserial>=3.5",
     "evdev>=1.6.0; sys_platform == 'linux'",
 ]
 
@@ -45,8 +47,8 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["race_tools*"]
+include = ["race_tools*", "spikerbit*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "strength_training"]
+testpaths = ["tests", "strength_training", "spikerbit/tests"]
 python_files = ["test_*.py"]

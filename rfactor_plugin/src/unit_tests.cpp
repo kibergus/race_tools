@@ -201,6 +201,12 @@ void TestConfigLoadSave() {
   sink2.enabled = false;
   customConfig.sinks.push_back(sink2);
 
+  SinkConfig sink3;
+  sink3.type = "command";
+  sink3.serverAddress = "http://127.0.0.1:18920";
+  sink3.enabled = true;
+  customConfig.sinks.push_back(sink3);
+
   SavePluginConfig(tempConfigPath, customConfig);
 
   // 3. Test loading the customized configuration back
@@ -213,7 +219,7 @@ void TestConfigLoadSave() {
   assert(loadedCustom.driverNameOverrides[0].driverName == "Alexey Guseynov");
   assert(loadedCustom.driverNameOverrides[1].carNameRegexp == "#9");
   assert(loadedCustom.driverNameOverrides[1].driverName == "Second Driver");
-  assert(loadedCustom.sinks.size() == 2);
+  assert(loadedCustom.sinks.size() == 3);
   assert(loadedCustom.sinks[0].type == "file");
   assert(loadedCustom.sinks[0].path == "c:/code/rfactor/telemetry_test");
   assert(loadedCustom.sinks[0].enabled == true);
@@ -223,6 +229,9 @@ void TestConfigLoadSave() {
   assert(loadedCustom.sinks[1].enabled == false);
   assert(loadedCustom.sinks[1].maxRetries == 10);
   assert(loadedCustom.sinks[1].bufferDurationMinutes == 30);
+  assert(loadedCustom.sinks[2].type == "command");
+  assert(loadedCustom.sinks[2].serverAddress == "http://127.0.0.1:18920");
+  assert(loadedCustom.sinks[2].enabled == true);
 
   // 4. Test loading malformed JSON.
   // Let's overwrite the file with bad JSON.
@@ -723,10 +732,13 @@ void TestBrt1StreamRoundTrip() {
 
   // 2. Send Metadata
   std::string metaChunk = encoder.EncodeMetadataChunk(meta);
+  assert(metaChunk.find("\"track_name\"") == std::string::npos);
+  assert(metaChunk.find("\"driver_name\"") == std::string::npos);
   decoder.Feed(metaChunk);
   assert(decoder.Step(record, err) == Brt1StreamDecoder::StepResult::MetadataReceived);
   assert(decoder.GetMetadata().trackName == "Rowrah");
   assert(decoder.GetMetadata().driverName == "Driver A");
+  assert(decoder.GetMetadata().kartNumber == "12");
   assert(decoder.GetChannels().size() == 61);
 
   // 3. Send First Sample (Must be Baseline 0x03)
@@ -908,12 +920,54 @@ void TestFileSinkBrotliBrt1() {
   std::cout << "TestFileSinkBrotliBrt1 passed!" << std::endl;
 }
 
+void TestCommandSinkSignalling() {
+  std::wstring tempLogPath = L"test_cmdsink.log";
+  std::error_code ec;
+  std::filesystem::remove(tempLogPath, ec);
+  Logger logger;
+  logger.Open(tempLogPath);
+
+  Sink::SessionMetadata meta;
+  meta.trackName = "Rowrah";
+  meta.date = "2026-11-11";
+  meta.time = "19:00:00";
+  meta.driverName = "KartDriver";
+  meta.league = "kartsim";
+  meta.className = "Senior MAX";
+  meta.sessionName = "Race";
+  meta.kartNumber = "55";
+
+  auto startTp = std::chrono::system_clock::from_time_t(1770000000);
+  std::string payload = CommandSink::BuildPayloadJson(
+      "active", startTp, "KartDriver_55_Rowrah", meta, "https://brbrdb.brbrkitten.com", "key_rf2");
+
+  assert(payload.find("\"state\":\"active\"") != std::string::npos);
+  assert(payload.find("\"Track name\":\"Rowrah\"") != std::string::npos);
+  assert(payload.find("\"Driver name\":\"KartDriver\"") != std::string::npos);
+  assert(payload.find("\"kart_number\":\"55\"") != std::string::npos);
+  assert(payload.find("\"track_name\"") == std::string::npos);
+  assert(payload.find("\"api_key\":\"key_rf2\"") != std::string::npos);
+
+  {
+    CommandSink sink("http://127.0.0.1:18998", "https://brbrdb.brbrkitten.com", "key_rf2",
+                     logger, std::chrono::milliseconds(10));
+    sink(Sink::StartSession{startTp, "tag", meta});
+    sink(Sink::Line{"", false, {0.0, 1.0}});
+    sink(Sink::EndSession{});
+  }
+
+  logger.Close();
+  std::filesystem::remove(tempLogPath, ec);
+  std::cout << "TestCommandSinkSignalling passed!" << std::endl;
+}
+
 int main() {
   std::cout << "Running unit tests for BRT1 Protocol..." << std::endl;
   TestBrt1FramingAndMagic();
   TestBrt1StreamRoundTrip();
   TestBrt1NaNAndKeyframeHandling();
   TestFileSinkBrotliBrt1();
+  TestCommandSinkSignalling();
   std::cout << "Running unit tests for MatrixToQuaternion..." << std::endl;
   TestIdentityMatrix();
   TestRotation90X();

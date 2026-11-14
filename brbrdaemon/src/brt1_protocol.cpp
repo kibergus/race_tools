@@ -168,41 +168,30 @@ std::string Brt1StreamEncoder::EncodeMetadataChunk(const Brt1SessionMetadata& me
 
   nlohmann::json j;
   nlohmann::json meta = {
-    {"track_name", trackName},
     {"Track name", trackName},
-    {"date", metadata.date},
     {"Date", metadata.date},
-    {"time", metadata.time},
     {"Time", metadata.time},
-    {"driver_name", driverName},
     {"Driver name", driverName},
-    {"league", league},
     {"League", league},
-    {"class", className},
-    {"class_name", className},
     {"Class", className},
-    {"session", sessionName},
-    {"session_name", sessionName},
     {"Session", sessionName}
   };
+  if (!metadata.sessionId.empty()) {
+    meta["Session ID"] = metadata.sessionId;
+  }
   if (!metadata.kartNumber.empty()) {
     meta["kart_number"] = metadata.kartNumber;
-    meta["Kart number"] = metadata.kartNumber;
   }
   if (!metadata.trackConfiguration.empty()) {
-    meta["track_configuration"] = metadata.trackConfiguration;
     meta["Track configuration"] = metadata.trackConfiguration;
   }
   if (!metadata.gameVersion.empty()) {
-    meta["game_version"] = metadata.gameVersion;
     meta["Game version"] = metadata.gameVersion;
   }
   if (!metadata.trackOriginLat.empty()) {
-    meta["track_origin_lat"] = metadata.trackOriginLat;
     meta["Track Origin Latitude"] = metadata.trackOriginLat;
   }
   if (!metadata.trackOriginLon.empty()) {
-    meta["track_origin_lon"] = metadata.trackOriginLon;
     meta["Track Origin Longitude"] = metadata.trackOriginLon;
   }
   j["metadata"] = meta;
@@ -368,18 +357,19 @@ Brt1StreamDecoder::StepResult Brt1StreamDecoder::Step(std::unordered_map<std::st
       auto j = nlohmann::json::parse(payload);
       if (j.contains("metadata") && j["metadata"].is_object()) {
         const auto& m = j["metadata"];
-        metadata_.trackName = m.value("track_name", m.value("Track name", ""));
-        metadata_.date = m.value("date", m.value("Date", ""));
-        metadata_.time = m.value("time", m.value("Time", ""));
-        metadata_.driverName = m.value("driver_name", m.value("Driver name", ""));
-        metadata_.league = m.value("league", m.value("League", ""));
-        metadata_.className = m.value("class_name", m.value("Class", m.value("class", "")));
-        metadata_.sessionName = m.value("session_name", m.value("Session", m.value("session", "")));
-        metadata_.kartNumber = m.value("kart_number", m.value("Kart number", ""));
-        metadata_.trackConfiguration = m.value("track_configuration", m.value("Track configuration", ""));
-        metadata_.gameVersion = m.value("game_version", m.value("Game version", ""));
-        metadata_.trackOriginLat = m.value("track_origin_lat", m.value("Track Origin Latitude", ""));
-        metadata_.trackOriginLon = m.value("track_origin_lon", m.value("Track Origin Longitude", ""));
+        metadata_.trackName = m.value("Track name", "");
+        metadata_.date = m.value("Date", "");
+        metadata_.time = m.value("Time", "");
+        metadata_.driverName = m.value("Driver name", "");
+        metadata_.league = m.value("League", "");
+        metadata_.className = m.value("Class", "");
+        metadata_.sessionName = m.value("Session", "");
+        metadata_.sessionId = m.value("Session ID", "");
+        metadata_.kartNumber = m.value("kart_number", "");
+        metadata_.trackConfiguration = m.value("Track configuration", "");
+        metadata_.gameVersion = m.value("Game version", "");
+        metadata_.trackOriginLat = m.value("Track Origin Latitude", "");
+        metadata_.trackOriginLon = m.value("Track Origin Longitude", "");
       }
       channels_.clear();
       if (j.contains("channels") && j["channels"].is_array()) {

@@ -57,21 +57,22 @@ Total size on wire: **7 bytes** (`04 00 01 42 4B 54 31`).
 - **`payload`**: UTF-8 encoded JSON object.
 
 #### JSON Structure:
+Metadata fields match the canonical CSV format headers (`Track name`, `Date`, `Time`, `Driver name`, `League`, `Class`, `Session`, etc.):
 ```json
 {
   "metadata": {
-    "track_name": "Rowrah",
-    "date": "2026-05-10",
-    "time": "14:30:00",
-    "driver_name": "Driver A",
-    "league": "kartsim",
-    "class_name": "cadet",
-    "session_name": "Practice",
+    "Track name": "Rowrah",
+    "Date": "2026-05-10",
+    "Time": "14:30:00",
+    "Driver name": "Driver A",
+    "League": "kartsim",
+    "Class": "cadet",
+    "Session": "Practice",
     "kart_number": "12",
-    "distance_to_rear_axle": 1.5,
-    "track_conditions": "Dry",
-    "temperature": "18.0",
-    "weather": "Sunny"
+    "Distance to rear axle": 1.5,
+    "Conditions": "Dry",
+    "Temperature": "18.0",
+    "Weather": "Sunny"
   },
   "channels": [
     {"name": "Time", "scale": 0.001},
