@@ -39,6 +39,7 @@ KNOWN_TRACK_METADATA = {
     },
     'spa': {
         'track_name': 'Spa-Francorchamps',
+        'ace_track_name': 'Circuit de Spa Francorchamps',
         'timezone': 'Europe/Brussels',
         'sector_splits_ratio': [0.333, 0.666]
     },
@@ -79,6 +80,7 @@ KNOWN_TRACK_METADATA = {
     },
     'nurburgring': {
         'track_name': 'Nürburgring',
+        'ace_track_name': 'Nurburgring',
         'timezone': 'Europe/Berlin',
         'sector_splits_ratio': [0.333, 0.666]
     },
@@ -143,20 +145,25 @@ KNOWN_ACE_LAYOUTS = {
         'national': 'National',
     },
     'imola': {
+        None: 'GP',
         'imola': 'GP',
         'gp': 'GP',
     },
     'kyalami': {
+        None: 'GP',
         'gp': 'GP',
     },
     'laguna_seca': {
+        None: 'GP',
         'laguna_seca': 'GP',
         'gp': 'GP',
     },
     'monza': {
+        None: 'GP',
         'gp': 'GP',
     },
     'mount_panorama': {
+        None: 'GP',
         'track_layout': 'GP',
         'gp': 'GP',
     },
@@ -167,7 +174,7 @@ KNOWN_ACE_LAYOUTS = {
         'sprint': 'Sprint',
         'touristenfahrten': 'Touristenfahrten',
         'nordschleife_touristenfahrten': 'Touristenfahrten',
-        'nordschleife_btg': 'Touristenfahrten',
+        'nordschleife_btg': 'Nordschleife BTG',
         'mullenbachschleife': 'Mullenbachschleife',
         'oldtimer': 'Oldtimer',
     },
@@ -176,8 +183,8 @@ KNOWN_ACE_LAYOUTS = {
         'fosters': 'Fosters',
     },
     'paul_ricard': {
-        '1a_v2': 'Layout 1A-v2',
-        '1c_v2': 'Layout 1C-v2',
+        '1a_v2': 'Layout 1A-V2',
+        '1c_v2': 'Layout 1C-V2',
         '3a': 'Layout 3A',
         '3c': 'Layout 3C',
     },
@@ -190,12 +197,15 @@ KNOWN_ACE_LAYOUTS = {
         'national': 'National',
     },
     'road_atlanta': {
+        None: 'GP',
         'gp': 'GP',
     },
     'sebring': {
+        None: 'GP',
         'gp': 'GP',
     },
     'spa': {
+        None: 'GP',
         'gp': 'GP',
     },
     'suzuka': {
@@ -654,69 +664,18 @@ def find_layout_spline_file(reader: ACEPackageReader, slug: str, layout: Optiona
     return None
 
 
-def get_ace_layout_name(
-    slug: str,
-    layout: Optional[str],
-    reader: Optional[ACEPackageReader] = None
-) -> Optional[str]:
-    """
-    Resolves the layout configuration name as it appears in Assetto Corsa Evo
-    (e.g. 'GP Short', 'GP', 'Indy', 'National').
-    """
-    if not layout:
-        return None
-
-    slug_norm = slug.lower().strip()
-    layout_norm = layout.lower().strip()
-
-    if slug_norm in KNOWN_ACE_LAYOUTS and layout_norm in KNOWN_ACE_LAYOUTS[slug_norm]:
-        return KNOWN_ACE_LAYOUTS[slug_norm][layout_norm]
-
-    if reader:
-        pkg_slug = resolve_kspkg_track_slug(reader, slug_norm)
-        prefix = f"content\\tracks\\{pkg_slug}\\dynamic_track\\"
-        candidates = []
-        for k in reader.file_table:
-            if k.startswith(prefix) and k.endswith(".dynamictrackpresetcompressed"):
-                preset = k[len(prefix):-len(".dynamictrackpresetcompressed")].strip()
-                candidates.append(preset)
-
-        layout_words = set(re.findall(r'[a-zA-Z0-9]+', layout_norm))
-        layout_words.discard('circuit')
-        layout_words.discard('layout')
-        if 'shortcut' in layout_words:
-            layout_words.remove('shortcut')
-            layout_words.add('short')
-
-        best_match = None
-        best_score = 0
-        for cand in candidates:
-            cand_words = set(re.findall(r'[a-zA-Z0-9]+', cand.lower()))
-            overlap = len(layout_words & cand_words)
-            if overlap > best_score:
-                best_score = overlap
-                best_match = cand
-
-        if best_match:
-            words = best_match.split()
-            formatted = []
-            for w in words:
-                if w.lower() in ('gp', '24h'):
-                    formatted.append(w.upper())
-                else:
-                    formatted.append(w.capitalize())
-            return " ".join(formatted)
-
+def format_layout_title(layout: str) -> str:
+    """Formats an internal layout slug into a clean display suffix."""
     words = layout.replace('_', ' ').split()
     formatted = []
     for w in words:
-        if w.lower() in ('gp', '24h'):
+        if w.lower() in ('gp', 'btg'):
             formatted.append(w.upper())
-        elif w.lower() == 'shortcut':
-            formatted.append('Short')
-        elif w.lower() != 'circuit':
-            formatted.append(w.capitalize())
-    return " ".join(formatted) if formatted else layout.replace('_', ' ').title()
+        elif w.lower() == '24h':
+            formatted.append('24h')
+        else:
+            formatted.append(w.title())
+    return " ".join(formatted)
 
 
 def get_ace_layout_name(
@@ -728,10 +687,12 @@ def get_ace_layout_name(
     Resolves the layout configuration name as it appears in Assetto Corsa Evo
     (e.g. 'GP Short', 'GP', 'Indy', 'National').
     """
+    slug_norm = slug.lower().strip()
     if not layout:
+        if slug_norm in KNOWN_ACE_LAYOUTS and None in KNOWN_ACE_LAYOUTS[slug_norm]:
+            return KNOWN_ACE_LAYOUTS[slug_norm][None]
         return None
 
-    slug_norm = slug.lower().strip()
     layout_norm = layout.lower().strip()
 
     if slug_norm in KNOWN_ACE_LAYOUTS and layout_norm in KNOWN_ACE_LAYOUTS[slug_norm]:
@@ -839,7 +800,11 @@ def extract_track(
         centerline_dicts = []
         lap_length = 5000.0
 
-    track_title = f"{meta['track_name']} {layout.replace('_', ' ').title()}" if layout else meta['track_name']
+    ace_layout = get_ace_layout_name(slug, layout, reader)
+    if not layout or (ace_layout and ace_layout.upper() == 'GP'):
+        track_title = meta['track_name']
+    else:
+        track_title = f"{meta['track_name']} {format_layout_title(layout)}"
 
     # 2. Save Canonical GeoJSON (Left Boundary, Right Boundary, Centerline)
     os.makedirs(output_dir, exist_ok=True)
@@ -946,11 +911,11 @@ def extract_track(
     }
     # Alias consists of the track name and layout name as they are in Assetto Corsa Evo.
     # If the alias matches track_name, do not add it.
-    ace_layout = get_ace_layout_name(slug, layout, reader)
+    ace_track_name = meta.get('ace_track_name', meta['track_name']).strip()
     if ace_layout:
-        ace_alias = f"{meta['track_name']} {ace_layout}".strip()
+        ace_alias = f"{ace_track_name} {ace_layout}".strip()
     else:
-        ace_alias = meta['track_name'].strip()
+        ace_alias = ace_track_name
 
     aliases = []
     if ace_alias and ace_alias.strip().lower() != track_title.strip().lower():
@@ -1020,8 +985,8 @@ def main():
             print(f"Available layouts for '{args.track}': {layouts}")
             return
         if args.all_layouts:
-            if not layouts:
-                print(f"No specific layout variants detected for '{args.track}'. Extracting base track...")
+            if len(layouts) <= 1:
+                print(f"Single layout detected for '{args.track}'. Extracting base track...")
                 extract_track(
                     track_slug=args.track,
                     kspkg_path=resolved_kspkg,

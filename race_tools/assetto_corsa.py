@@ -73,6 +73,7 @@ TRACK_ORIGINS: dict[str, AssettoCorsaTrackOrigin] = {
         track_data.Correction(north_m=987.0, east_m=-1260.0, angle_deg=1.38)),
 }
 TRACK_ORIGINS['redbull_ring'] = TRACK_ORIGINS['red_bull_ring']
+TRACK_ORIGINS['cota'] = TRACK_ORIGINS['circuit_of_the_americas']
 
 
 def get_track_origin(track_name: str | None) -> AssettoCorsaTrackOrigin:
