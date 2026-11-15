@@ -4,6 +4,7 @@ Handles the conversion between rFactor's Cartesian (meters) coordinate system an
 """
 import math
 from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
 from race_tools import track_data
 
 
@@ -161,3 +162,215 @@ def rfactor_to_gps(x: float, z: float, origin: track_data.TrackOrigin) -> tuple[
     lon = origin.lon + (x / m_per_deg_lon)
 
     return lat, lon
+
+
+@dataclass(frozen=True)
+class RFactorCameraProjection:
+    """Single-screen camera projection parameters recorded in BRT1 metadata ('camera_projection')."""
+
+    vfov_deg: float = 50.0
+    resolution_px: tuple[int, int] = (1920, 1080)
+
+    @property
+    def aspect_ratio(self) -> float:
+        """Return screen width / height aspect ratio."""
+        w, h = self.resolution_px
+        if w > 0 and h > 0:
+            return float(w) / float(h)
+        return 16.0 / 9.0
+
+    @classmethod
+    def from_metadata(cls, data: Mapping[str, Any]) -> 'RFactorCameraProjection':
+        """
+        Parse RFactorCameraProjection from either a 'camera_projection' dict
+        or a parent BRT1 'metadata' dict containing 'camera_projection'.
+        """
+        proj = data.get('camera_projection', data)
+        if not isinstance(proj, Mapping):
+            raise ValueError('Invalid camera_projection metadata object.')
+
+        raw_res = proj.get('resolution_px')
+        if isinstance(raw_res, Sequence) and len(raw_res) == 2:
+            resolution = (int(raw_res[0]), int(raw_res[1]))
+        else:
+            resolution = (1920, 1080)
+
+        return cls(
+            vfov_deg=float(proj.get('vfov_deg', 50.0)),
+            resolution_px=resolution,
+        )
+
+
+def unproject_rfactor_gaze_ray(
+    u: float,
+    v: float,
+    projection: RFactorCameraProjection,
+) -> tuple[float, float, float]:
+    """
+    Unproject normalized screen gaze coordinates (u, v in [0, 1], top-left origin)
+    into a unit 3D gaze ray in rFactor 2's local camera frame
+    (+x = Left, +y = Up, +z = Back; optical axis = -z).
+    """
+    if math.isnan(u) or math.isnan(v):
+        return math.nan, math.nan, math.nan
+
+    half_vfov_rad = 0.5 * math.radians(projection.vfov_deg)
+    tan_half_vfov = math.tan(half_vfov_rad)
+    tan_half_hfov = projection.aspect_ratio * tan_half_vfov
+
+    # Screen right (u > 0.5) maps to -x in isiMotor local coordinates (+x is Left)
+    dx = -(2.0 * u - 1.0) * tan_half_hfov
+    dy = (1.0 - 2.0 * v) * tan_half_vfov
+    dz = -1.0
+
+    norm = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if norm <= 0.0:
+        return 0.0, 0.0, -1.0
+    return dx / norm, dy / norm, dz / norm
+
+
+def quat_to_rfactor_matrix(
+    qx: float,
+    qy: float,
+    qz: float,
+    qw: float,
+) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    """
+    Convert an (x, y, z, w) quaternion emitted by MatrixToQuaternion into the 3x3
+    rFactor orientation matrix rows (matching TelemQuat::ConvertQuatToMat in InternalsPlugin.hpp).
+
+    Dot-multiplying row 0, 1, 2 with a local vector produces world (X, Y, Z).
+    """
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if norm <= 0.0 or math.isnan(norm):
+        raise ValueError('Invalid zero or NaN quaternion.')
+    qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
+
+    x2, y2, z2 = qx + qx, qy + qy, qz + qz
+    xx, yy, zz = qx * x2, qy * y2, qz * z2
+    xz, xy, yz = qx * z2, qx * y2, qy * z2
+    wx, wy, wz = qw * x2, qw * y2, qw * z2
+
+    row0 = (1.0 - (yy + zz), xy - wz, xz + wy)
+    row1 = (xy + wz, 1.0 - (xx + zz), yz - wx)
+    row2 = (xz - wy, yz + wx, 1.0 - (xx + yy))
+    return row0, row1, row2
+
+
+def slerp_quat(
+    q0: tuple[float, float, float, float],
+    q1: tuple[float, float, float, float],
+    alpha: float,
+) -> tuple[float, float, float, float]:
+    """
+    Shortest-path spherical linear interpolation (SLERP) between two (qx, qy, qz, qw) quaternions.
+    """
+    n0 = math.sqrt(sum(c * c for c in q0))
+    n1 = math.sqrt(sum(c * c for c in q1))
+    if n0 <= 0.0 or n1 <= 0.0 or math.isnan(n0) or math.isnan(n1) or math.isnan(alpha):
+        return math.nan, math.nan, math.nan, math.nan
+
+    x0, y0, z0, w0 = q0[0] / n0, q0[1] / n0, q0[2] / n0, q0[3] / n0
+    x1, y1, z1, w1 = q1[0] / n1, q1[1] / n1, q1[2] / n1, q1[3] / n1
+
+    dot = x0 * x1 + y0 * y1 + z0 * z1 + w0 * w1
+    if dot < 0.0:
+        dot = -dot
+        x1, y1, z1, w1 = -x1, -y1, -z1, -w1
+
+    if dot > 0.9995:
+        rx = x0 + alpha * (x1 - x0)
+        ry = y0 + alpha * (y1 - y0)
+        rz = z0 + alpha * (z1 - z0)
+        rw = w0 + alpha * (w1 - w0)
+        rn = math.sqrt(rx * rx + ry * ry + rz * rz + rw * rw)
+        return rx / rn, ry / rn, rz / rn, rw / rn
+
+    theta_0 = math.acos(min(1.0, dot))
+    theta = theta_0 * alpha
+    sin_theta = math.sin(theta)
+    sin_theta_0 = math.sin(theta_0)
+
+    s0 = math.cos(theta) - dot * sin_theta / sin_theta_0
+    s1 = sin_theta / sin_theta_0
+    return (
+        s0 * x0 + s1 * x1,
+        s0 * y0 + s1 * y1,
+        s0 * z0 + s1 * z1,
+        s0 * w0 + s1 * w1,
+    )
+
+
+def rfactor_direction_to_gps_bearing(
+    dx: float,
+    dz: float,
+    origin: track_data.TrackOrigin,
+) -> float:
+    """
+    Convert a horizontal direction vector (dx, dz) in rFactor world coordinates
+    to a GPS map compass bearing in [0.0, 360.0) degrees clockwise from North.
+    """
+    if math.isnan(dx) or math.isnan(dz) or (dx == 0.0 and dz == 0.0):
+        return math.nan
+
+    angle_deg = origin.correction.angle_deg - origin.heading
+    raw_bearing_deg = math.degrees(math.atan2(dx, dz))
+    return (raw_bearing_deg - angle_deg) % 360.0
+
+
+def reconstruct_kart_heading(
+    ori_quat: tuple[float, float, float, float],
+    origin: track_data.TrackOrigin,
+) -> float:
+    """
+    Compute the kart chassis GPS compass heading in [0.0, 360.0) degrees clockwise from North
+    from 'Ori Quat X/Y/Z/W'.
+    """
+    qx, qy, qz, qw = ori_quat
+    if any(math.isnan(c) for c in (qx, qy, qz, qw)):
+        return math.nan
+
+    row0, _, row2 = quat_to_rfactor_matrix(qx, qy, qz, qw)
+    # Local forward in isiMotor vehicle coordinates is (0, 0, -1)
+    world_fx = -row0[2]
+    world_fz = -row2[2]
+    return rfactor_direction_to_gps_bearing(world_fx, world_fz, origin)
+
+
+def reconstruct_gaze_map_yaw(
+    gaze_x: float,
+    gaze_y: float,
+    cam_quat: tuple[float, float, float, float],
+    projection: RFactorCameraProjection | Mapping[str, Any],
+    origin: track_data.TrackOrigin,
+) -> float:
+    """
+    Reconstruct the GPS map compass bearing (in [0.0, 360.0) degrees clockwise from North)
+    of a driver's 3D gaze ray from eye-tracker normalized coordinates (Gaze X, Gaze Y in [0, 1]),
+    rFactor 2 driving camera orientation quaternion (Cam Quat X/Y/Z/W), camera projection
+    metadata, and track GPS origin.
+
+    Returns math.nan if gaze or camera quaternion contains NaN (e.g. blink or trackside camera),
+    or if the gaze ray points vertically with zero horizontal projection.
+    """
+    qx, qy, qz, qw = cam_quat
+    if math.isnan(gaze_x) or math.isnan(gaze_y) or any(math.isnan(c) for c in (qx, qy, qz, qw)):
+        return math.nan
+
+    proj = (
+        projection
+        if isinstance(projection, RFactorCameraProjection)
+        else RFactorCameraProjection.from_metadata(projection)
+    )
+
+    ray_x, ray_y, ray_z = unproject_rfactor_gaze_ray(gaze_x, gaze_y, proj)
+    if math.isnan(ray_x):
+        return math.nan
+
+    row0, _, row2 = quat_to_rfactor_matrix(qx, qy, qz, qw)
+    world_dx = row0[0] * ray_x + row0[1] * ray_y + row0[2] * ray_z
+    world_dz = row2[0] * ray_x + row2[1] * ray_y + row2[2] * ray_z
+    if math.hypot(world_dx, world_dz) < 1e-9:
+        return math.nan
+
+    return rfactor_direction_to_gps_bearing(world_dx, world_dz, origin)

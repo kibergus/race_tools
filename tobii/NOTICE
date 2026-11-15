@@ -1,0 +1,17 @@
+BrBrDb Tobii Eye Tracker 5 Direct-USB Telemetry Streamer
+Copyright 2026 race_tools contributors
+Licensed under the Apache License, Version 2.0.
+
+This directory includes protocol framing and NIR pose decomposition logic
+adapted from:
+
+1. njmill/tobii-linux (https://github.com/njmill/tobii-linux)
+   Licensed under the Apache License, Version 2.0.
+   Specifically:
+   - USB/TTP framing, XDS column tags (0x0500), in-band NIR frame tags (0x050e),
+     and sync frame tags (0x1771) adapted from tools/app/tobii-ttp-mux.c.
+   - CLAHE NIR preprocessing and forward-axis 6-DoF rotation decomposition
+     adapted from scripts/runtime/mediapipe-face-worker.py.
+
+2. Google MediaPipe Face Landmarker (https://ai.google.dev/edge/mediapipe)
+   Licensed under the Apache License, Version 2.0.

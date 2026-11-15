@@ -64,6 +64,8 @@ installer/publish/
 Thumbs.db
 
 data/
+tobii/models/*.task
+tobii/calibration_profile.json
 *.jpeg
 *_tune.html
 

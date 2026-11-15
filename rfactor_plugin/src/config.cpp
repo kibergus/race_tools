@@ -77,6 +77,12 @@ PluginConfig LoadPluginConfig(const std::wstring& path) {
     }
     outConfig.allParticipantsInRace = j["all_participants_in_race"].get<bool>();
   }
+  if (j.contains("collect_camera_orientation")) {
+    if (!j["collect_camera_orientation"].is_boolean()) {
+      throw std::runtime_error("Field 'collect_camera_orientation' must be a boolean");
+    }
+    outConfig.collectCameraOrientation = j["collect_camera_orientation"].get<bool>();
+  }
 
   if (j.contains("sinks")) {
     if (!j["sinks"].is_array()) {
@@ -180,6 +186,7 @@ void SavePluginConfig(const std::wstring& path, const PluginConfig& config) {
   j["kart_number_filter"] = config.kartNumberFilter;
   j["league"] = config.league;
   j["all_participants_in_race"] = config.allParticipantsInRace;
+  j["collect_camera_orientation"] = config.collectCameraOrientation;
 
   nlohmann::json sinks_arr = nlohmann::json::array();
   for (const auto& item : config.sinks) {

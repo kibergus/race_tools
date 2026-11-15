@@ -56,6 +56,10 @@ namespace BrBrDbTelemetry
             RunTest("TestBrt1Encoder_GetSessionMetadata_Brt1Br", TestBrt1Encoder_GetSessionMetadata_Brt1Br);
             RunTest("TestBrt1Encoder_GetSessionFiles_IncludesBrt1Br", TestBrt1Encoder_GetSessionFiles_IncludesBrt1Br);
             RunTest("TestGetSessionMetadataHeader", TestGetSessionMetadataHeader);
+            RunTest("TestConfigHelperCollectCameraOrientation", TestConfigHelperCollectCameraOrientation);
+            RunTest("TestBrt1Encoder_CameraChannelScales", TestBrt1Encoder_CameraChannelScales);
+            RunTest("TestInstallUpdatePreservesCustomSinks", TestInstallUpdatePreservesCustomSinks);
+            RunTest("TestConfigHelperOptionalFieldsPreserved", TestConfigHelperOptionalFieldsPreserved);
 
             Console.WriteLine("==================================================");
             Console.WriteLine(string.Format("Tests run: {0}, Failed: {1}", testsRun, testsFailed));
@@ -1011,6 +1015,111 @@ namespace BrBrDbTelemetry
             {
                 DeleteTempDirectory(tempDir);
             }
+        }
+
+        static void TestConfigHelperCollectCameraOrientation()
+        {
+            var config = new PluginConfig();
+            Assert(!config.collect_camera_orientation, "Default collect_camera_orientation should be false");
+
+            string serialized = ConfigHelper.Serialize(config);
+            Assert(serialized.Contains("\"collect_camera_orientation\": false"), "Serialized json should contain collect_camera_orientation: false");
+
+            var deserialized = ConfigHelper.Deserialize(serialized);
+            Assert(!deserialized.collect_camera_orientation, "Deserialized config should have collect_camera_orientation false");
+
+            config.collect_camera_orientation = true;
+            string serializedTrue = ConfigHelper.Serialize(config);
+            Assert(serializedTrue.Contains("\"collect_camera_orientation\": true"), "Serialized json should contain collect_camera_orientation: true");
+
+            var deserializedTrue = ConfigHelper.Deserialize(serializedTrue);
+            Assert(deserializedTrue.collect_camera_orientation, "Deserialized config should have collect_camera_orientation true");
+        }
+
+        static void TestBrt1Encoder_CameraChannelScales()
+        {
+            Assert(Math.Abs(Brt1Encoder.GetDefaultChannelScale("Cam Pos X") - 0.001) < 1e-9, "Cam Pos X scale should be 0.001");
+            Assert(Math.Abs(Brt1Encoder.GetDefaultChannelScale("Cam Pos Y") - 0.001) < 1e-9, "Cam Pos Y scale should be 0.001");
+            Assert(Math.Abs(Brt1Encoder.GetDefaultChannelScale("Cam Pos Z") - 0.001) < 1e-9, "Cam Pos Z scale should be 0.001");
+            Assert(Math.Abs(Brt1Encoder.GetDefaultChannelScale("Cam Quat X") - 0.0001) < 1e-9, "Cam Quat X scale should be 0.0001");
+            Assert(Math.Abs(Brt1Encoder.GetDefaultChannelScale("Cam Quat Y") - 0.0001) < 1e-9, "Cam Quat Y scale should be 0.0001");
+            Assert(Math.Abs(Brt1Encoder.GetDefaultChannelScale("Cam Quat Z") - 0.0001) < 1e-9, "Cam Quat Z scale should be 0.0001");
+            Assert(Math.Abs(Brt1Encoder.GetDefaultChannelScale("Cam Quat W") - 0.0001) < 1e-9, "Cam Quat W scale should be 0.0001");
+        }
+
+        static void TestInstallUpdatePreservesCustomSinks()
+        {
+            // 1. Fresh install creates default [http, file] sinks
+            var freshConfig = new PluginConfig();
+            InstallManager.ApplyInstallSinkUpdates(freshConfig, isNewConfig: true, apiKey: "my_key", defaultTelemetryPath: @"C:\Telemetry");
+            Assert(freshConfig.sinks.Count == 2, "Fresh install should create 2 default sinks");
+            Assert(freshConfig.sinks[0].type == "http" && freshConfig.sinks[0].api_key == "my_key" && freshConfig.sinks[0].enabled, "Fresh http sink mismatch");
+            Assert(freshConfig.sinks[1].type == "file" && freshConfig.sinks[1].path == @"C:\Telemetry" && freshConfig.sinks[1].enabled, "Fresh file sink mismatch");
+
+            // 2. Add two command sinks (e.g. Spiker:bit on 18920 and Tobii on 18921)
+            freshConfig.sinks.Add(new SinkConfig { type = "command", server_address = "http://127.0.0.1:18920", enabled = true });
+            freshConfig.sinks.Add(new SinkConfig { type = "command", server_address = "http://127.0.0.1:18921", enabled = false });
+
+            // Simulate JSON round-trip + Update / Reinstall (isNewConfig: false, empty apiKey and path)
+            string json = ConfigHelper.Serialize(freshConfig);
+            var existingConfig = ConfigHelper.Deserialize(json);
+            InstallManager.ApplyInstallSinkUpdates(existingConfig, isNewConfig: false, apiKey: "", defaultTelemetryPath: "");
+
+            Assert(existingConfig.sinks.Count == 4, "Update/Reinstall must preserve all 4 sinks including command sinks");
+            Assert(existingConfig.sinks[0].type == "http" && existingConfig.sinks[0].api_key == "my_key", "HTTP sink must be preserved");
+            Assert(existingConfig.sinks[1].type == "file" && existingConfig.sinks[1].path == @"C:\Telemetry", "File sink must be preserved");
+            Assert(existingConfig.sinks[2].type == "command" && existingConfig.sinks[2].server_address == "http://127.0.0.1:18920" && existingConfig.sinks[2].enabled, "First command sink must be preserved");
+            Assert(existingConfig.sinks[3].type == "command" && existingConfig.sinks[3].server_address == "http://127.0.0.1:18921" && !existingConfig.sinks[3].enabled, "Second command sink and disabled state must be preserved");
+
+            // 3. Install over existing config with explicit API key and path updates http/file in place while keeping command sinks
+            InstallManager.ApplyInstallSinkUpdates(existingConfig, isNewConfig: false, apiKey: "updated_key", defaultTelemetryPath: @"D:\NewTel");
+            Assert(existingConfig.sinks.Count == 4, "Explicit install overrides must still keep command sinks");
+            Assert(existingConfig.sinks[0].api_key == "updated_key", "API key should be updated in place");
+            Assert(existingConfig.sinks[1].path == @"D:\NewTel", "Telemetry path should be updated in place");
+            Assert(existingConfig.sinks[2].type == "command" && existingConfig.sinks[2].server_address == "http://127.0.0.1:18920", "Command sink 1 still preserved");
+            Assert(existingConfig.sinks[3].type == "command" && existingConfig.sinks[3].server_address == "http://127.0.0.1:18921", "Command sink 2 still preserved");
+        }
+
+        static void TestConfigHelperOptionalFieldsPreserved()
+        {
+            string rawJson = "{\n" +
+                "  \"simulator\": \"auto\",\n" +
+                "  \"car_name_regexp\": \".*\",\n" +
+                "  \"kart_number_filter\": \"\",\n" +
+                "  \"league\": \"kartsim\",\n" +
+                "  \"polling_rate_hz\": 120,\n" +
+                "  \"all_participants_in_race\": false,\n" +
+                "  \"collect_camera_orientation\": true,\n" +
+                "  \"sinks\": [\n" +
+                "    {\n" +
+                "      \"type\": \"http\",\n" +
+                "      \"enabled\": true,\n" +
+                "      \"server_address\": \"https://brbrdb.brbrkitten.com\",\n" +
+                "      \"api_key\": \"k1\",\n" +
+                "      \"max_retries\": 12,\n" +
+                "      \"buffer_duration_minutes\": 45\n" +
+                "    },\n" +
+                "    {\n" +
+                "      \"type\": \"command\",\n" +
+                "      \"enabled\": true,\n" +
+                "      \"server_address\": \"http://127.0.0.1:18921\"\n" +
+                "    }\n" +
+                "  ]\n" +
+                "}";
+
+            var cfg = ConfigHelper.Deserialize(rawJson);
+            Assert(cfg.polling_rate_hz == 120, "polling_rate_hz must be parsed");
+            Assert(cfg.sinks.Count == 2, "Expected 2 sinks");
+            Assert(cfg.sinks[0].max_retries == 12, "max_retries must be parsed");
+            Assert(cfg.sinks[0].buffer_duration_minutes == 45, "buffer_duration_minutes must be parsed");
+            Assert(cfg.sinks[1].type == "command" && cfg.sinks[1].server_address == "http://127.0.0.1:18921", "command sink must be parsed");
+
+            string reserialized = ConfigHelper.Serialize(cfg);
+            var reloaded = ConfigHelper.Deserialize(reserialized);
+            Assert(reloaded.polling_rate_hz == 120, "polling_rate_hz must survive round-trip");
+            Assert(reloaded.sinks[0].max_retries == 12, "max_retries must survive round-trip");
+            Assert(reloaded.sinks[0].buffer_duration_minutes == 45, "buffer_duration_minutes must survive round-trip");
+            Assert(reloaded.sinks[1].type == "command" && reloaded.sinks[1].server_address == "http://127.0.0.1:18921", "command sink must survive round-trip");
         }
     }
 }

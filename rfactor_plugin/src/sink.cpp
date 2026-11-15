@@ -206,7 +206,7 @@ void FileSink::operator()(const StartSession& start) {
   }
   logger_.Write("FileSink - Started session, writing to: " + WStringToString(filePath_));
 
-  encoder_.Reset();
+  encoder_.SetChannels(GetBrt1Channels(start.collectCameraOrientation));
   samplesSinceFlush_ = 0;
 
   if (brotliState_) {
@@ -326,7 +326,7 @@ void HttpSink::Abort() {
 void HttpSink::operator()(const StartSession& start) {
   sessionStartTime_ = start.sessionStartTime;
   metadata_ = start.metadata;
-  encoder_.Reset();
+  encoder_.SetChannels(GetBrt1Channels(start.collectCameraOrientation));
   buffer_.clear();
   backoff_.Reset();
   Disconnect();
@@ -660,6 +660,13 @@ std::string CommandSink::BuildPayloadJson(const std::string& state,
   }
   if (!metadata.trackConfiguration.empty()) {
     metaObj["Track configuration"] = metadata.trackConfiguration;
+  }
+  if (metadata.cameraProjection.enabled) {
+    const auto& cp = metadata.cameraProjection;
+    metaObj["camera_projection"] = {
+      {"vfov_deg", cp.vfovDeg},
+      {"resolution_px", {cp.resolutionW, cp.resolutionH}}
+    };
   }
   payload["metadata"] = metaObj;
 

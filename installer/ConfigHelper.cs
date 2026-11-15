@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 
 namespace BrBrDbTelemetry
@@ -23,6 +24,8 @@ namespace BrBrDbTelemetry
         public string path { get; set; }
         public string server_address { get; set; }
         public string api_key { get; set; }
+        public int? max_retries { get; set; }
+        public int? buffer_duration_minutes { get; set; }
 
         public SinkConfig()
         {
@@ -31,6 +34,8 @@ namespace BrBrDbTelemetry
             path = "";
             server_address = "";
             api_key = "";
+            max_retries = null;
+            buffer_duration_minutes = null;
         }
     }
 
@@ -46,7 +51,9 @@ namespace BrBrDbTelemetry
         public string car_name_regexp { get; set; }
         public string kart_number_filter { get; set; }
         public string league { get; set; }
+        public int? polling_rate_hz { get; set; }
         public bool all_participants_in_race { get; set; }
+        public bool collect_camera_orientation { get; set; }
         public List<DriverNameOverride> driver_name_overrides { get; set; }
         public List<SinkConfig> sinks { get; set; }
         public Dictionary<string, SimulatorSettings> simulators { get; set; }
@@ -57,7 +64,9 @@ namespace BrBrDbTelemetry
             car_name_regexp = "KSP.*";
             kart_number_filter = "";
             league = "kartsim";
+            polling_rate_hz = null;
             all_participants_in_race = false;
+            collect_camera_orientation = false;
             driver_name_overrides = new List<DriverNameOverride>();
             sinks = new List<SinkConfig>();
             simulators = new Dictionary<string, SimulatorSettings>(StringComparer.OrdinalIgnoreCase);
@@ -126,7 +135,12 @@ namespace BrBrDbTelemetry
             sb.AppendLine("    \"car_name_regexp\": " + EscapeString(config.car_name_regexp) + ",");
             sb.AppendLine("    \"kart_number_filter\": " + EscapeString(config.kart_number_filter) + ",");
             sb.AppendLine("    \"league\": " + EscapeString(config.league) + ",");
+            if (config.polling_rate_hz.HasValue)
+            {
+                sb.AppendLine("    \"polling_rate_hz\": " + config.polling_rate_hz.Value.ToString(CultureInfo.InvariantCulture) + ",");
+            }
             sb.AppendLine("    \"all_participants_in_race\": " + config.all_participants_in_race.ToString().ToLower() + ",");
+            sb.AppendLine("    \"collect_camera_orientation\": " + config.collect_camera_orientation.ToString().ToLower() + ",");
 
             // Sinks
             sb.AppendLine("    \"sinks\": [");
@@ -143,7 +157,27 @@ namespace BrBrDbTelemetry
                 else if (sink.type == "http")
                 {
                     sb.AppendLine(",\n            \"server_address\": " + EscapeString(sink.server_address) + ",");
-                    sb.AppendLine("            \"api_key\": " + EscapeString(sink.api_key));
+                    if (sink.max_retries.HasValue || sink.buffer_duration_minutes.HasValue)
+                    {
+                        sb.AppendLine("            \"api_key\": " + EscapeString(sink.api_key) + ",");
+                        if (sink.max_retries.HasValue && sink.buffer_duration_minutes.HasValue)
+                        {
+                            sb.AppendLine("            \"max_retries\": " + sink.max_retries.Value.ToString(CultureInfo.InvariantCulture) + ",");
+                            sb.AppendLine("            \"buffer_duration_minutes\": " + sink.buffer_duration_minutes.Value.ToString(CultureInfo.InvariantCulture));
+                        }
+                        else if (sink.max_retries.HasValue)
+                        {
+                            sb.AppendLine("            \"max_retries\": " + sink.max_retries.Value.ToString(CultureInfo.InvariantCulture));
+                        }
+                        else
+                        {
+                            sb.AppendLine("            \"buffer_duration_minutes\": " + sink.buffer_duration_minutes.Value.ToString(CultureInfo.InvariantCulture));
+                        }
+                    }
+                    else
+                    {
+                        sb.AppendLine("            \"api_key\": " + EscapeString(sink.api_key));
+                    }
                 }
                 else if (sink.type == "command")
                 {
@@ -224,8 +258,12 @@ namespace BrBrDbTelemetry
                         config.kart_number_filter = (string)dict["kart_number_filter"];
                     if (dict.ContainsKey("league") && dict["league"] is string)
                         config.league = (string)dict["league"];
+                    if (dict.ContainsKey("polling_rate_hz") && dict["polling_rate_hz"] is double)
+                        config.polling_rate_hz = (int)(double)dict["polling_rate_hz"];
                     if (dict.ContainsKey("all_participants_in_race") && dict["all_participants_in_race"] is bool)
                         config.all_participants_in_race = (bool)dict["all_participants_in_race"];
+                    if (dict.ContainsKey("collect_camera_orientation") && dict["collect_camera_orientation"] is bool)
+                        config.collect_camera_orientation = (bool)dict["collect_camera_orientation"];
 
                     if (dict.ContainsKey("sinks"))
                     {
@@ -249,6 +287,10 @@ namespace BrBrDbTelemetry
                                         sink.server_address = (string)sinkDict["server_address"];
                                     if (sinkDict.ContainsKey("api_key") && sinkDict["api_key"] is string)
                                         sink.api_key = (string)sinkDict["api_key"];
+                                    if (sinkDict.ContainsKey("max_retries") && sinkDict["max_retries"] is double)
+                                        sink.max_retries = (int)(double)sinkDict["max_retries"];
+                                    if (sinkDict.ContainsKey("buffer_duration_minutes") && sinkDict["buffer_duration_minutes"] is double)
+                                        sink.buffer_duration_minutes = (int)(double)sinkDict["buffer_duration_minutes"];
                                     if (sink.type == "command" && string.IsNullOrEmpty(sink.server_address))
                                         sink.server_address = "http://127.0.0.1:18920";
 
@@ -348,7 +390,7 @@ namespace BrBrDbTelemetry
 
         private static void SkipWhitespace(string json, ref int index)
         {
-            while (index < json.Length && char.IsWhiteSpace(json[index]))
+            while (index < json.Length && (char.IsWhiteSpace(json[index]) || json[index] == '\uFEFF'))
             {
                 index++;
             }
@@ -489,7 +531,7 @@ namespace BrBrDbTelemetry
                 index++;
             }
             string numStr = json.Substring(start, index - start);
-            return double.Parse(numStr);
+            return double.Parse(numStr, CultureInfo.InvariantCulture);
         }
     }
 }

@@ -329,30 +329,7 @@ namespace BrBrDbTelemetry
                 config.league = "auto";
             }
 
-            SinkConfig fileSink = config.sinks.Find(s => s.type == "file") ?? new SinkConfig { type = "file" };
-            if (isNewConfig || !string.IsNullOrEmpty(defaultTelemetryPath))
-                fileSink.path = string.IsNullOrEmpty(defaultTelemetryPath) ? "" : defaultTelemetryPath;
-            if (isNewConfig)
-                fileSink.enabled = true;
-
-            SinkConfig httpSink = config.sinks.Find(s => s.type == "http") ?? new SinkConfig { type = "http" };
-            if (isNewConfig)
-                httpSink.server_address = "https://brbrdb.brbrkitten.com";
-            if (!string.IsNullOrEmpty(apiKey))
-            {
-                httpSink.api_key = apiKey;
-                httpSink.enabled = true;
-            }
-            else if (string.IsNullOrEmpty(httpSink.api_key))
-            {
-                httpSink.api_key = "";
-                if (isNewConfig)
-                    httpSink.enabled = false;
-            }
-
-            config.sinks.Clear();
-            config.sinks.Add(httpSink);
-            config.sinks.Add(fileSink);
+            ApplyInstallSinkUpdates(config, isNewConfig, apiKey, defaultTelemetryPath);
 
             string configJson = ConfigHelper.Serialize(config);
             File.WriteAllText(configPath, configJson, Encoding.UTF8);
@@ -721,36 +698,81 @@ namespace BrBrDbTelemetry
                 config.league = "kartsim";
             }
 
-            // Make sure sinks exist
-            SinkConfig fileSink = config.sinks.Find(s => s.type == "file") ?? new SinkConfig { type = "file" };
-            if (isNewConfig || !string.IsNullOrEmpty(defaultTelemetryPath))
-                fileSink.path = string.IsNullOrEmpty(defaultTelemetryPath) ? "" : defaultTelemetryPath;
-            if (isNewConfig)
-                fileSink.enabled = true;
-
-            SinkConfig httpSink = config.sinks.Find(s => s.type == "http") ?? new SinkConfig { type = "http" };
-            if (isNewConfig)
-                httpSink.server_address = "https://brbrdb.brbrkitten.com";
-            if (!string.IsNullOrEmpty(apiKey))
-            {
-                httpSink.api_key = apiKey;
-                httpSink.enabled = true;
-            }
-            else if (string.IsNullOrEmpty(httpSink.api_key))
-            {
-                httpSink.api_key = "";
-                if (isNewConfig)
-                    httpSink.enabled = false;
-            }
-
-            // Ensure http sink is first, then file sink
-            config.sinks.Clear();
-            config.sinks.Add(httpSink);
-            config.sinks.Add(fileSink);
+            ApplyInstallSinkUpdates(config, isNewConfig, apiKey, defaultTelemetryPath);
 
             // Save config
             string configJson = ConfigHelper.Serialize(config);
             File.WriteAllText(configPath, configJson, Encoding.UTF8);
+        }
+
+        public static void ApplyInstallSinkUpdates(PluginConfig config, bool isNewConfig, string apiKey, string defaultTelemetryPath)
+        {
+            if (isNewConfig || config.sinks.Count == 0)
+            {
+                var httpSink = new SinkConfig
+                {
+                    type = "http",
+                    server_address = "https://brbrdb.brbrkitten.com",
+                    api_key = string.IsNullOrEmpty(apiKey) ? "" : apiKey,
+                    enabled = !string.IsNullOrEmpty(apiKey)
+                };
+                var fileSink = new SinkConfig
+                {
+                    type = "file",
+                    path = string.IsNullOrEmpty(defaultTelemetryPath) ? "" : defaultTelemetryPath,
+                    enabled = true
+                };
+                config.sinks.Clear();
+                config.sinks.Add(httpSink);
+                config.sinks.Add(fileSink);
+                return;
+            }
+
+            // Existing config: preserve all configured sinks (including 'command' sinks,
+            // additional sinks, enabled/disabled state, and ordering). Only apply explicit
+            // install-time overrides when non-empty values were supplied.
+            if (!string.IsNullOrEmpty(apiKey))
+            {
+                SinkConfig httpSink = config.sinks.Find(s => s.type == "http");
+                if (httpSink == null)
+                {
+                    httpSink = new SinkConfig
+                    {
+                        type = "http",
+                        server_address = "https://brbrdb.brbrkitten.com",
+                        api_key = apiKey,
+                        enabled = true
+                    };
+                    config.sinks.Insert(0, httpSink);
+                }
+                else
+                {
+                    if (string.IsNullOrEmpty(httpSink.server_address))
+                        httpSink.server_address = "https://brbrdb.brbrkitten.com";
+                    httpSink.api_key = apiKey;
+                    httpSink.enabled = true;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(defaultTelemetryPath))
+            {
+                SinkConfig fileSink = config.sinks.Find(s => s.type == "file");
+                if (fileSink == null)
+                {
+                    fileSink = new SinkConfig
+                    {
+                        type = "file",
+                        path = defaultTelemetryPath,
+                        enabled = true
+                    };
+                    int httpIdx = config.sinks.FindIndex(s => s.type == "http");
+                    config.sinks.Insert(httpIdx >= 0 ? httpIdx + 1 : 0, fileSink);
+                }
+                else
+                {
+                    fileSink.path = defaultTelemetryPath;
+                }
+            }
         }
 
         // Uninstall DLL and config

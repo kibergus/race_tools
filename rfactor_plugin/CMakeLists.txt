@@ -88,6 +88,8 @@ add_library(BrBrDbTelemetry SHARED
     src/brbrdb_telemetry_plugin.h
     src/brt1_protocol.cpp
     src/brt1_protocol.h
+    src/camera_config.cpp
+    src/camera_config.h
     src/sink.cpp
     src/sink.h
     src/config.cpp
@@ -121,6 +123,8 @@ add_executable(mock_runner
     src/brbrdb_telemetry_plugin.h
     src/brt1_protocol.cpp
     src/brt1_protocol.h
+    src/camera_config.cpp
+    src/camera_config.h
     src/sink.cpp
     src/sink.h
     src/config.cpp
@@ -143,6 +147,8 @@ add_executable(unit_tests
     src/brbrdb_telemetry_plugin.h
     src/brt1_protocol.cpp
     src/brt1_protocol.h
+    src/camera_config.cpp
+    src/camera_config.h
     src/config.cpp
     src/config.h
     src/safe_queue.h

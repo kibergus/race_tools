@@ -125,6 +125,7 @@ namespace BrBrDbTelemetry
         private TextBox txtKartNumberFilter;
         private TextBox txtLeague;
         private CheckBox chkAllParticipantsInRace;
+        private CheckBox chkCollectCameraOrientation;
         private FlatButton btnSaveGeneral;
 
         // Controls: Sinks Tab
@@ -553,41 +554,41 @@ namespace BrBrDbTelemetry
         {
             tabGeneral = CreateTabPanel();
 
-            CreateHeaderLabel(tabGeneral, "General Telemetry Settings", 20);
+            CreateHeaderLabel(tabGeneral, "General Telemetry Settings", 18);
 
-            CreateFieldLabel(tabGeneral, "Vehicle Name Regex Filter:", 65);
-            txtCarRegexp = CreateTextBox(tabGeneral, 90, 580);
+            CreateFieldLabel(tabGeneral, "Vehicle Name Regex Filter:", 54);
+            txtCarRegexp = CreateTextBox(tabGeneral, 76, 580);
             Label lblCarHelp = new Label
             {
                 Text = "Only sessions with the matching vehicle name will be recorded. " +
                        "Use 'KSP.*' to capture KartSim sessions, '.*' to match everything.",
-                Location = new Point(20, 118),
-                Size = new Size(580, 34),
+                Location = new Point(20, 104),
+                Size = new Size(580, 32),
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
                 ForeColor = ColorTextMuted
             };
             tabGeneral.Controls.Add(lblCarHelp);
 
-            CreateFieldLabel(tabGeneral, "Kart Number Filter:", 165);
-            txtKartNumberFilter = CreateTextBox(tabGeneral, 190, 580);
+            CreateFieldLabel(tabGeneral, "Kart Number Filter:", 142);
+            txtKartNumberFilter = CreateTextBox(tabGeneral, 164, 580);
             Label lblKartHelp = new Label
             {
                 Text = "Only record sessions for this kart number. " +
                        "Leave blank to record all kart numbers.",
-                Location = new Point(20, 218),
-                Size = new Size(580, 34),
+                Location = new Point(20, 192),
+                Size = new Size(580, 20),
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
                 ForeColor = ColorTextMuted
             };
             tabGeneral.Controls.Add(lblKartHelp);
 
-            CreateFieldLabel(tabGeneral, "League Name:", 265);
-            txtLeague = CreateTextBox(tabGeneral, 290, 580);
+            CreateFieldLabel(tabGeneral, "League Name:", 220);
+            txtLeague = CreateTextBox(tabGeneral, 242, 580);
             Label lblLeagueHelp = new Label
             {
                 Text = "Leave as 'kartsim' as BrBrDb won't accept other values.",
-                Location = new Point(20, 318),
-                Size = new Size(580, 34),
+                Location = new Point(20, 270),
+                Size = new Size(580, 20),
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
                 ForeColor = ColorTextMuted
             };
@@ -596,8 +597,8 @@ namespace BrBrDbTelemetry
             chkAllParticipantsInRace = new CheckBox
             {
                 Text = "Collect telemetry for all participants in a race",
-                Location = new Point(20, 360),
-                Size = new Size(580, 25),
+                Location = new Point(20, 298),
+                Size = new Size(580, 24),
                 Font = new Font("Segoe UI", 9.5f),
                 ForeColor = ColorText
             };
@@ -606,12 +607,33 @@ namespace BrBrDbTelemetry
             Label lblAllParticipantsHelp = new Label
             {
                 Text = "When enabled, telemetry will be recorded for all participants in the session instead of only the main player.",
-                Location = new Point(20, 388),
+                Location = new Point(20, 322),
                 Size = new Size(580, 20),
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
                 ForeColor = ColorTextMuted
             };
             tabGeneral.Controls.Add(lblAllParticipantsHelp);
+
+            chkCollectCameraOrientation = new CheckBox
+            {
+                Text = "Collect camera orientation",
+                Location = new Point(20, 350),
+                Size = new Size(580, 24),
+                Font = new Font("Segoe UI", 9.5f),
+                ForeColor = ColorText,
+                Checked = false
+            };
+            tabGeneral.Controls.Add(chkCollectCameraOrientation);
+
+            Label lblCollectCameraHelp = new Label
+            {
+                Text = "When enabled, records 6-DoF driving camera pose and FOV projection metadata (rFactor 2) for gaze reconstruction.",
+                Location = new Point(20, 374),
+                Size = new Size(580, 32),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
+                ForeColor = ColorTextMuted
+            };
+            tabGeneral.Controls.Add(lblCollectCameraHelp);
 
             btnSaveGeneral = new FlatButton("Save Configuration", 200, 35)
             {
@@ -1882,6 +1904,7 @@ namespace BrBrDbTelemetry
                     }
                     txtKartNumberFilter.Text = config.kart_number_filter;
                     chkAllParticipantsInRace.Checked = config.all_participants_in_race;
+                    chkCollectCameraOrientation.Checked = config.collect_camera_orientation;
 
                     // Bind install tab config from file if present
                     SinkConfig fileSink = config.sinks.Find(s => s.type == "file");
@@ -1920,7 +1943,8 @@ namespace BrBrDbTelemetry
                     return txtCarRegexp.Text != expectedCar ||
                            txtKartNumberFilter.Text != diskConfig.kart_number_filter ||
                            txtLeague.Text != expectedLeague ||
-                           chkAllParticipantsInRace.Checked != diskConfig.all_participants_in_race;
+                           chkAllParticipantsInRace.Checked != diskConfig.all_participants_in_race ||
+                           chkCollectCameraOrientation.Checked != diskConfig.collect_camera_orientation;
                 }
                 else if (tabId == "sinks")
                 {
@@ -1970,6 +1994,7 @@ namespace BrBrDbTelemetry
                         }
                         config.kart_number_filter = txtKartNumberFilter.Text;
                         config.all_participants_in_race = chkAllParticipantsInRace.Checked;
+                        config.collect_camera_orientation = chkCollectCameraOrientation.Checked;
                     }
                     SaveConfigToDisk();
                 }
@@ -2215,6 +2240,7 @@ namespace BrBrDbTelemetry
             }
             config.kart_number_filter = txtKartNumberFilter.Text;
             config.all_participants_in_race = chkAllParticipantsInRace.Checked;
+            config.collect_camera_orientation = chkCollectCameraOrientation.Checked;
 
             bool restarted = SaveConfigToDisk();
             string msg = restarted
@@ -2243,19 +2269,32 @@ namespace BrBrDbTelemetry
             }
         }
 
+        private bool suppressSinkEvents = false;
+
         private void LstSinks_SelectedIndexChanged(object sender, EventArgs e)
         {
+            if (suppressSinkEvents)
+                return;
+
             int idx = lstSinks.SelectedIndex;
             if (idx >= 0 && idx < config.sinks.Count)
             {
-                var s = config.sinks[idx];
-                cbSinkType.SelectedItem = s.type;
-                chkSinkEnabled.Checked = s.enabled;
-                txtSinkPath.Text = s.path;
-                txtSinkServer.Text = s.server_address;
-                txtSinkApiKey.Text = s.api_key;
-                pnlSinkEdit.Visible = true;
-                UpdateSinkFieldVisibility(s.type);
+                suppressSinkEvents = true;
+                try
+                {
+                    var s = config.sinks[idx];
+                    cbSinkType.SelectedItem = s.type;
+                    chkSinkEnabled.Checked = s.enabled;
+                    txtSinkPath.Text = s.path;
+                    txtSinkServer.Text = s.server_address;
+                    txtSinkApiKey.Text = s.api_key;
+                    pnlSinkEdit.Visible = true;
+                    UpdateSinkFieldVisibility(s.type);
+                }
+                finally
+                {
+                    suppressSinkEvents = false;
+                }
             }
             else
             {
@@ -2292,33 +2331,63 @@ namespace BrBrDbTelemetry
 
         private void CbSinkType_SelectedIndexChanged(object sender, EventArgs e)
         {
+            if (suppressSinkEvents)
+                return;
+
             int idx = lstSinks.SelectedIndex;
-            if (idx >= 0 && idx < config.sinks.Count)
+            if (idx >= 0 && idx < config.sinks.Count && cbSinkType.SelectedItem != null)
             {
                 string newType = cbSinkType.SelectedItem.ToString();
                 config.sinks[idx].type = newType;
-                if (newType == "command" && string.IsNullOrEmpty(config.sinks[idx].server_address))
+                suppressSinkEvents = true;
+                try
                 {
-                    config.sinks[idx].server_address = "http://127.0.0.1:18920";
-                    txtSinkServer.Text = config.sinks[idx].server_address;
+                    if (newType == "command" && string.IsNullOrEmpty(config.sinks[idx].server_address))
+                    {
+                        config.sinks[idx].server_address = "http://127.0.0.1:18920";
+                        txtSinkServer.Text = config.sinks[idx].server_address;
+                    }
+                    else if (newType == "http" && string.IsNullOrEmpty(config.sinks[idx].server_address))
+                    {
+                        config.sinks[idx].server_address = "https://brbrdb.brbrkitten.com";
+                        txtSinkServer.Text = config.sinks[idx].server_address;
+                    }
+                    UpdateSinkFieldVisibility(newType);
+                    lstSinks.Items[idx] = string.Format("Sink {0}: {1} ({2})", idx + 1, newType, config.sinks[idx].enabled ? "On" : "Off");
                 }
-                UpdateSinkFieldVisibility(newType);
-                lstSinks.Items[idx] = string.Format("Sink {0}: {1} ({2})", idx + 1, newType, config.sinks[idx].enabled ? "On" : "Off");
+                finally
+                {
+                    suppressSinkEvents = false;
+                }
             }
         }
 
         private void ChkSinkEnabled_CheckedChanged(object sender, EventArgs e)
         {
+            if (suppressSinkEvents)
+                return;
+
             int idx = lstSinks.SelectedIndex;
             if (idx >= 0 && idx < config.sinks.Count)
             {
                 config.sinks[idx].enabled = chkSinkEnabled.Checked;
-                lstSinks.Items[idx] = string.Format("Sink {0}: {1} ({2})", idx + 1, config.sinks[idx].type, chkSinkEnabled.Checked ? "On" : "Off");
+                suppressSinkEvents = true;
+                try
+                {
+                    lstSinks.Items[idx] = string.Format("Sink {0}: {1} ({2})", idx + 1, config.sinks[idx].type, chkSinkEnabled.Checked ? "On" : "Off");
+                }
+                finally
+                {
+                    suppressSinkEvents = false;
+                }
             }
         }
 
         private void TxtSinkPath_TextChanged(object sender, EventArgs e)
         {
+            if (suppressSinkEvents)
+                return;
+
             int idx = lstSinks.SelectedIndex;
             if (idx >= 0 && idx < config.sinks.Count)
                 config.sinks[idx].path = txtSinkPath.Text;
@@ -2326,6 +2395,9 @@ namespace BrBrDbTelemetry
 
         private void TxtSinkServer_TextChanged(object sender, EventArgs e)
         {
+            if (suppressSinkEvents)
+                return;
+
             int idx = lstSinks.SelectedIndex;
             if (idx >= 0 && idx < config.sinks.Count)
                 config.sinks[idx].server_address = txtSinkServer.Text;
@@ -2333,6 +2405,9 @@ namespace BrBrDbTelemetry
 
         private void TxtSinkApiKey_TextChanged(object sender, EventArgs e)
         {
+            if (suppressSinkEvents)
+                return;
+
             int idx = lstSinks.SelectedIndex;
             if (idx >= 0 && idx < config.sinks.Count)
                 config.sinks[idx].api_key = txtSinkApiKey.Text;

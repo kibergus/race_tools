@@ -41,6 +41,7 @@ struct PluginConfig {
   std::string kartNumberFilter = ""; // empty = match all kart numbers
   std::string league = "kartsim";
   bool allParticipantsInRace = false;
+  bool collectCameraOrientation = false;
   std::vector<DriverNameOverride> driverNameOverrides;
   std::vector<SinkConfig> sinks;
 };

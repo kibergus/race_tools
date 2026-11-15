@@ -194,7 +194,7 @@ class Brt1DecodedEvent:
     chunk_type: int
     raw_chunk: bytes
     metadata: Optional[Dict[str, Any]] = None
-    channels: Optional[List[Dict[str, Any]] ] = None
+    channels: Optional[List[Dict[str, Any]]] = None
     samples: Optional[List[Tuple[float, ...]]] = None
     clock_pong: Optional[Tuple[int, int]] = None
 

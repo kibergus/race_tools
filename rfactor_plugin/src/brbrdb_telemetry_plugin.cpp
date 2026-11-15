@@ -239,6 +239,11 @@ void BrBrDbTelemetryPlugin::EnterRealtime() {
     std::lock_guard<std::mutex> lock(timeTrackersMutex_);
     timeTrackers_.clear();
   }
+  {
+    std::lock_guard<std::mutex> lock(cameraMutex_);
+    latestCameraSnapshot_ = CameraPoseSnapshot{};
+    latestCameraSnapshot_.hwnd = lastKnownHwnd_;
+  }
 
   // Reset scoring initialization state
   scoringInitialized_ = false;
@@ -258,9 +263,60 @@ void BrBrDbTelemetryPlugin::ExitRealtime() {
   logger_.Write("Realtime cockpit exited - Telemetry extraction disabled");
 
   // Push sentinel to trigger session end for all active participants
-  TelemInfoV01 sentinel = {};
-  sentinel.mElapsedTime = -1.0;
+  QueuedTelemetryItem sentinel = {};
+  sentinel.info.mElapsedTime = -1.0;
   telemetryQueue_.Push(sentinel);
+}
+
+void BrBrDbTelemetryPlugin::SetEnvironment(const EnvironmentInfoV01& info) {
+  if (info.mPath[0] != nullptr && info.mPath[0][0] != '\0') {
+    std::lock_guard<std::mutex> lock(metadataMutex_);
+    environmentUserDataPath_ = std::filesystem::path(info.mPath[0]);
+  }
+}
+
+std::filesystem::path BrBrDbTelemetryPlugin::ResolveUserDataDirectoryLocked() const {
+  std::error_code ec;
+  if (!environmentUserDataPath_.empty() && std::filesystem::exists(environmentUserDataPath_, ec)) {
+    return environmentUserDataPath_;
+  }
+  std::filesystem::path logDirPath(logDirectory_);
+  if (std::filesystem::exists(logDirPath / "Config_DX11.ini", ec) ||
+      std::filesystem::exists(logDirPath / "player" / "player.JSON", ec)) {
+    return logDirPath;
+  }
+  std::filesystem::path parentDir = logDirPath.parent_path();
+  if (!parentDir.empty() &&
+      (std::filesystem::exists(parentDir / "Config_DX11.ini", ec) ||
+       std::filesystem::exists(parentDir / "player" / "player.JSON", ec))) {
+    return parentDir;
+  }
+  try {
+    std::filesystem::path dllDir(GetCurrentModuleDirectory());
+    std::filesystem::path rf2UserData = dllDir.parent_path().parent_path() / L"UserData";
+    if (std::filesystem::exists(rf2UserData, ec)) {
+      return rf2UserData;
+    }
+  } catch (...) {
+  }
+  return parentDir;
+}
+
+void BrBrDbTelemetryPlugin::UpdateGraphics(const GraphicsInfoV02& info) {
+  std::lock_guard<std::mutex> lock(cameraMutex_);
+  latestCameraSnapshot_.received = true;
+  latestCameraSnapshot_.viewedId = info.mID;
+  latestCameraSnapshot_.cameraType = info.mCameraType;
+  latestCameraSnapshot_.camPos = info.mCamPos;
+  latestCameraSnapshot_.camOri[0] = info.mCamOri[0];
+  latestCameraSnapshot_.camOri[1] = info.mCamOri[1];
+  latestCameraSnapshot_.camOri[2] = info.mCamOri[2];
+  if (info.mHWND != nullptr) {
+    latestCameraSnapshot_.hwnd = info.mHWND;
+    lastKnownHwnd_ = info.mHWND;
+  } else {
+    latestCameraSnapshot_.hwnd = lastKnownHwnd_;
+  }
 }
 
 void BrBrDbTelemetryPlugin::UpdateTelemetry(const TelemInfoV01& info) {
@@ -280,6 +336,7 @@ void BrBrDbTelemetryPlugin::UpdateTelemetry(const TelemInfoV01& info) {
 
     TelemInfoV01 localInfo = info;
     auto now = std::chrono::steady_clock::now();
+    std::chrono::system_clock::time_point firstSystemTime;
 
     {
       std::lock_guard<std::mutex> lock(timeTrackersMutex_);
@@ -287,6 +344,7 @@ void BrBrDbTelemetryPlugin::UpdateTelemetry(const TelemInfoV01& info) {
       if (!tracker.firstTelemetryReceived) {
         tracker.lastElapsedTime = info.mElapsedTime;
         tracker.lastElapsedTimeRealTime = now;
+        tracker.firstTelemetrySystemTime = std::chrono::system_clock::now();
         tracker.firstTelemetryReceived = true;
       } else {
         if (info.mElapsedTime != tracker.lastElapsedTime) {
@@ -297,9 +355,18 @@ void BrBrDbTelemetryPlugin::UpdateTelemetry(const TelemInfoV01& info) {
           localInfo.mElapsedTime += realWorldDelta;
         }
       }
+      firstSystemTime = tracker.firstTelemetrySystemTime;
     }
 
-    telemetryQueue_.Push(localInfo);
+    QueuedTelemetryItem item;
+    item.info = localInfo;
+    item.firstTelemetrySystemTime = firstSystemTime;
+    if (config_.collectCameraOrientation) {
+      std::lock_guard<std::mutex> lock(cameraMutex_);
+      item.camera = latestCameraSnapshot_;
+    }
+
+    telemetryQueue_.Push(item);
   }
 }
 
@@ -308,6 +375,9 @@ void BrBrDbTelemetryPlugin::UpdateScoring(const ScoringInfoV01& info) {
 
   metadata_.trackName = info.mTrackName;
   metadata_.sessionType = GetSessionTypeStr(info.mSession);
+  if (info.mPlrFileName[0] != '\0') {
+    metadata_.plrFileName = info.mPlrFileName;
+  }
 
   // Cache track conditions (atomic so logger thread can read without holding the lock)
   cachedTrackTemp_.store(info.mTrackTemp);
@@ -384,10 +454,10 @@ void BrBrDbTelemetryPlugin::UpdateScoring(const ScoringInfoV01& info) {
 // -------------------------------------------------------------
 
 void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
-  TelemInfoV01 info;
+  QueuedTelemetryItem queuedItem;
   auto reader = telemetryQueue_.reader();
 
-  const std::string csvColumnHeaders =
+  const std::string csvColumnHeadersBase =
       "Time,x,z,Speed,GForceLat,GForceLon,GForceVert,Throttle,Brake,Steering Angle,Clutch,Gear,"
       "Toe FL,Toe FR,Toe RL,Toe RR,"
       "Ori Quat X,Ori Quat Y,Ori Quat Z,Ori Quat W,"
@@ -401,14 +471,15 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
       "Flag,"
       "Track Temp,Ambient Temp,Raining,Avg Track Wetness,"
       "Tyre Surf Temp FL,Tyre Surf Temp FR,Tyre Surf Temp RL,Tyre Surf Temp RR,"
-      "Tyre Carcass Temp FL,Tyre Carcass Temp FR,Tyre Carcass Temp RL,Tyre Carcass Temp RR\n";
+      "Tyre Carcass Temp FL,Tyre Carcass Temp FR,Tyre Carcass Temp RL,Tyre Carcass Temp RR";
 
   while (loggingActive_) {
     // Block and wait for telemetry structures to arrive in queue using the reader
-    if (!reader.Pop(info)) {
+    if (!reader.Pop(queuedItem)) {
       break; // Shutdown signal received
     }
 
+    const TelemInfoV01& info = queuedItem.info;
     if (info.mElapsedTime < 0.0) // Sentinel value to close session
     {
       for (auto& [id, session] : participantSessions_) {
@@ -426,17 +497,24 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
     if (it == participantSessions_.end()) {
       auto session = std::make_unique<ParticipantSession>();
       session->vehicleId = info.mID;
-      session->sessionStartTime = std::chrono::system_clock::now();
+      session->sessionStartTime =
+          (queuedItem.firstTelemetrySystemTime.time_since_epoch().count() > 0)
+              ? queuedItem.firstTelemetrySystemTime
+              : std::chrono::system_clock::now();
       session->startElapsedTime = info.mElapsedTime;
       session->startElapsedTimeCaptured = true;
 
       ParticipantInfo pInfo;
+      std::filesystem::path userDataDir;
+      std::string plrFileName;
       {
         std::lock_guard<std::mutex> lock(metadataMutex_);
         session->trackName = metadata_.trackName.empty()
             ? (info.mTrackName[0] != '\0' ? info.mTrackName : "Unknown Track")
             : metadata_.trackName;
         session->sessionType = metadata_.sessionType.empty() ? "Practice" : metadata_.sessionType;
+        userDataDir = ResolveUserDataDirectoryLocked();
+        plrFileName = metadata_.plrFileName;
         auto pit = participants_.find(info.mID);
         if (pit != participants_.end()) {
           pInfo = pit->second;
@@ -520,6 +598,7 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
       sprintf_s(dateBuf, "%04d-%02d-%02d", start_tm.tm_year + 1900, start_tm.tm_mon + 1, start_tm.tm_mday);
       sprintf_s(timeBuf, "%02d:%02d:%02d", start_tm.tm_hour, start_tm.tm_min, start_tm.tm_sec);
 
+      const bool collectCam = config_.collectCameraOrientation;
       Sink::SessionMetadata sessionMeta;
       sessionMeta.trackName = session->trackName;
       sessionMeta.date = dateBuf;
@@ -530,8 +609,27 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
       sessionMeta.sessionName = session->sessionType;
       sessionMeta.kartNumber = session->kartNumber;
 
+      if (collectCam) {
+        HWND hwnd = queuedItem.camera.hwnd;
+        if (hwnd == nullptr) {
+          std::lock_guard<std::mutex> lock(cameraMutex_);
+          hwnd = lastKnownHwnd_;
+        }
+        std::string fovWarning;
+        sessionMeta.cameraProjection = ResolveCameraProjection(
+            userDataDir, plrFileName, pInfo.vehicleName, hwnd, &fovWarning);
+        if (!fovWarning.empty()) {
+          logger_.Write("WARNING: " + fovWarning);
+        }
+        logger_.Write("Camera projection resolved: vfov_deg=" +
+                      std::to_string(sessionMeta.cameraProjection.vfovDeg) +
+                      ", resolution=" + std::to_string(sessionMeta.cameraProjection.resolutionW) +
+                      "x" + std::to_string(sessionMeta.cameraProjection.resolutionH));
+      }
+
       // Push Start Event
-      session->csvQueue.Push(Sink::StartSession{session->sessionStartTime, session->participantTag, sessionMeta});
+      session->csvQueue.Push(Sink::StartSession{
+          session->sessionStartTime, session->participantTag, sessionMeta, collectCam});
 
       std::stringstream ss;
       ss << "Track name," << session->trackName << "\n";
@@ -544,10 +642,20 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
       if (!session->kartNumber.empty()) {
         ss << "kart_number," << session->kartNumber << "\n";
       }
+      if (collectCam && sessionMeta.cameraProjection.enabled) {
+        ss << "camera_vfov_deg," << sessionMeta.cameraProjection.vfovDeg << "\n";
+        ss << "camera_resolution_px," << sessionMeta.cameraProjection.resolutionW
+           << "x" << sessionMeta.cameraProjection.resolutionH << "\n";
+      }
       ss << "\n"; // Blank line separating metadata header and telemetry rows
       session->csvQueue.Push(Sink::Line{ss.str(), /*isHeader=*/true});
 
       // Write CSV Column Headers
+      std::string csvColumnHeaders = csvColumnHeadersBase;
+      if (collectCam) {
+        csvColumnHeaders += ",Cam Pos X,Cam Pos Y,Cam Pos Z,Cam Quat X,Cam Quat Y,Cam Quat Z,Cam Quat W";
+      }
+      csvColumnHeaders += "\n";
       session->csvQueue.Push(Sink::Line{csvColumnHeaders, /*isHeader=*/true});
 
       logger_.Write("Telemetry session started for participant: " + session->driverName + " (ID: " + std::to_string(info.mID) + ")");
@@ -566,7 +674,8 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
 
     std::vector<double> values;
     std::string line;
-    ExtractTelemetryData(info, session->sessionStartTime, session->startElapsedTime, flag, values, line);
+    ExtractTelemetryData(info, session->sessionStartTime, session->startElapsedTime, flag,
+                         config_.collectCameraOrientation, &queuedItem.camera, values, line);
     session->csvQueue.Push(Sink::Line{line, /*isHeader=*/false, std::move(values)});
   }
 
@@ -584,6 +693,8 @@ void BrBrDbTelemetryPlugin::ExtractTelemetryData(
     const std::chrono::system_clock::time_point& sessionStartRealTime,
     double startElapsedTime,
     unsigned char flag,
+    bool includeCamera,
+    const CameraPoseSnapshot* camera,
     std::vector<double>& outValues,
     std::string& outCsvLine) {
   // 1. Time (ISO-8601 UTC and seconds since Unix epoch)
@@ -768,8 +879,38 @@ void BrBrDbTelemetryPlugin::ExtractTelemetryData(
      << info.mWheel[0].mTireCarcassTemperature << ","
      << info.mWheel[1].mTireCarcassTemperature << ","
      << info.mWheel[2].mTireCarcassTemperature << ","
-     << info.mWheel[3].mTireCarcassTemperature << "\n";
+     << info.mWheel[3].mTireCarcassTemperature;
 
+  if (includeCamera) {
+    // Only emit valid camera pose when viewing an attached driving camera (TV cockpit=0, cockpit=1, nosecam=2)
+    // for this specific vehicle slot ID.
+    bool camValid = (camera != nullptr) &&
+                    camera->received &&
+                    (camera->viewedId == info.mID) &&
+                    (camera->cameraType >= 0 && camera->cameraType <= 2);
+    if (camValid) {
+      double cqx = 0.0, cqy = 0.0, cqz = 0.0, cqw = 1.0;
+      race_tools::MatrixToQuaternion(camera->camOri, cqx, cqy, cqz, cqw);
+      outValues.push_back(camera->camPos.x);
+      outValues.push_back(camera->camPos.y);
+      outValues.push_back(camera->camPos.z);
+      outValues.push_back(cqx);
+      outValues.push_back(cqy);
+      outValues.push_back(cqz);
+      outValues.push_back(cqw);
+
+      ss << "," << camera->camPos.x << "," << camera->camPos.y << "," << camera->camPos.z
+         << "," << cqx << "," << cqy << "," << cqz << "," << cqw;
+    } else {
+      const double nanVal = std::numeric_limits<double>::quiet_NaN();
+      for (int i = 0; i < 7; ++i) {
+        outValues.push_back(nanVal);
+      }
+      ss << ",,,,,,,";
+    }
+  }
+
+  ss << "\n";
   outCsvLine = ss.str();
 }
 
@@ -780,7 +921,8 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(
     unsigned char flag) {
   std::vector<double> values;
   std::string csvLine;
-  ExtractTelemetryData(info, sessionStartRealTime, startElapsedTime, flag, values, csvLine);
+  ExtractTelemetryData(info, sessionStartRealTime, startElapsedTime, flag,
+                       config_.collectCameraOrientation, nullptr, values, csvLine);
   return csvLine;
 }
 

@@ -40,7 +40,10 @@ namespace BrBrDbTelemetry
                 case "Time": return 0.001;
                 case "x":
                 case "y":
-                case "z": return 0.001;
+                case "z":
+                case "Cam Pos X":
+                case "Cam Pos Y":
+                case "Cam Pos Z": return 0.001;
                 case "Latitude":
                 case "Longitude": return 1e-7;
                 case "Speed": return 0.01;
@@ -64,6 +67,7 @@ namespace BrBrDbTelemetry
 
             if (name.StartsWith("Toe ", StringComparison.OrdinalIgnoreCase)) return 0.0001;
             if (name.StartsWith("Ori Quat ", StringComparison.OrdinalIgnoreCase)) return 0.0001;
+            if (name.StartsWith("Cam Quat ", StringComparison.OrdinalIgnoreCase)) return 0.0001;
             if (name.StartsWith("RPS ", StringComparison.OrdinalIgnoreCase)) return 0.01;
             if (name.Contains("Patch Vel", StringComparison.OrdinalIgnoreCase)) return 0.01;
             if (name.Contains("Tyre Load", StringComparison.OrdinalIgnoreCase) || name.Contains("Tire Load", StringComparison.OrdinalIgnoreCase)) return 0.1;

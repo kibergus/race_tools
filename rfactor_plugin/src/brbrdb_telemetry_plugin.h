@@ -22,6 +22,7 @@
 #include <thread>
 #include <atomic>
 #include <string>
+#include <filesystem>
 #include <fstream>
 #include <regex>
 #include <chrono>
@@ -30,6 +31,7 @@
 #include <limits>
 #include <memory>
 #include <variant>
+#include "camera_config.h"
 #include "config.h"
 #include "logger.h"
 #include "safe_queue.h"
@@ -49,6 +51,22 @@ struct SessionMetadata {
   std::string vehicleClass;
   std::string vehicleName;
   std::string kartNumber;
+  std::string plrFileName;
+};
+
+struct CameraPoseSnapshot {
+  bool received = false;
+  long viewedId = -1;
+  long cameraType = -1;
+  TelemVect3 camPos = {0.0, 0.0, 0.0};
+  TelemVect3 camOri[3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+  HWND hwnd = nullptr;
+};
+
+struct QueuedTelemetryItem {
+  TelemInfoV01 info = {};
+  std::chrono::system_clock::time_point firstTelemetrySystemTime = {};
+  CameraPoseSnapshot camera = {};
 };
 
 struct ParticipantInfo {
@@ -64,6 +82,7 @@ struct ParticipantInfo {
 struct VehicleTimeTracker {
   double lastElapsedTime = 0.0;
   std::chrono::steady_clock::time_point lastElapsedTimeRealTime;
+  std::chrono::system_clock::time_point firstTelemetrySystemTime;
   bool firstTelemetryReceived = false;
 };
 
@@ -86,6 +105,8 @@ struct ParticipantSession {
 // The Telemetry Plugin Implementation Class
 class BrBrDbTelemetryPlugin : public InternalsPluginV07 {
 public:
+  using InternalsPluginV07::UpdateGraphics;
+
   explicit BrBrDbTelemetryPlugin(const std::wstring& logDirectory = L"");
   virtual ~BrBrDbTelemetryPlugin();
 
@@ -94,9 +115,13 @@ public:
   virtual void Shutdown() override;
   virtual void EnterRealtime() override;
   virtual void ExitRealtime() override;
+  virtual void SetEnvironment(const EnvironmentInfoV01& info) override;
 
   virtual long WantsTelemetryUpdates() override { return config_.allParticipantsInRace ? 2 : 1; }
   virtual void UpdateTelemetry(const TelemInfoV01& info) override;
+
+  virtual bool WantsGraphicsUpdates() override { return config_.collectCameraOrientation; }
+  virtual void UpdateGraphics(const GraphicsInfoV02& info) override;
 
   virtual bool WantsScoringUpdates() override { return true; }
   virtual void UpdateScoring(const ScoringInfoV01& info) override;
@@ -106,12 +131,17 @@ private:
   std::atomic<bool> loggingActive_{false};
 
   std::thread loggerThread_;
-  SafeQueue<TelemInfoV01> telemetryQueue_;
+  SafeQueue<QueuedTelemetryItem> telemetryQueue_;
   std::wstring logDirectory_;
+  std::filesystem::path environmentUserDataPath_;
 
   SessionMetadata metadata_;
   std::mutex metadataMutex_;
   std::unordered_map<long, ParticipantInfo> participants_;
+
+  std::mutex cameraMutex_;
+  CameraPoseSnapshot latestCameraSnapshot_;
+  HWND lastKnownHwnd_ = nullptr;
 
   PluginConfig config_;
   std::regex carNameRegex_;
@@ -141,11 +171,14 @@ private:
   std::unordered_map<long, std::unique_ptr<ParticipantSession>> participantSessions_;
 
   void LoadAndApplyConfig();
+  std::filesystem::path ResolveUserDataDirectoryLocked() const;
   void LoggerThreadWorker();
   void ExtractTelemetryData(const TelemInfoV01& info,
                             const std::chrono::system_clock::time_point& sessionStartTime,
                             double startElapsedTime,
                             unsigned char flag,
+                            bool includeCamera,
+                            const CameraPoseSnapshot* camera,
                             std::vector<double>& outValues,
                             std::string& outCsvLine);
   std::string FormatTelemetryLine(const TelemInfoV01& info,

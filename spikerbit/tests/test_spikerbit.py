@@ -20,7 +20,6 @@ from spikerbit.brt1_protocol import (
     CHUNK_METADATA,
     SPIKERBIT_CHANNELS,
     encode_baseline_chunk,
-    encode_clock_pong_chunk,
     encode_delta_batch_chunk,
     encode_eos_chunk,
     encode_magic_chunk,

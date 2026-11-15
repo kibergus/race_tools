@@ -182,7 +182,9 @@ void TestConfigLoadSave() {
   // 2. Test saving a customized configuration
   PluginConfig customConfig;
   assert(customConfig.allParticipantsInRace == false);
+  assert(customConfig.collectCameraOrientation == false);
   customConfig.allParticipantsInRace = true;
+  customConfig.collectCameraOrientation = true;
   customConfig.carNameRegexp = "IAME Cadet #.*";
   customConfig.league = "cadet_cup";
   customConfig.driverNameOverrides.push_back({"#8", "Alexey Guseynov"});
@@ -212,6 +214,7 @@ void TestConfigLoadSave() {
   // 3. Test loading the customized configuration back
   PluginConfig loadedCustom = LoadPluginConfig(tempConfigPath);
   assert(loadedCustom.allParticipantsInRace == true);
+  assert(loadedCustom.collectCameraOrientation == true);
   assert(loadedCustom.carNameRegexp == "IAME Cadet #.*");
   assert(loadedCustom.league == "cadet_cup");
   assert(loadedCustom.driverNameOverrides.size() == 2);
@@ -319,6 +322,20 @@ void TestConfigLoadSave() {
     threwOnBadAllParticipants = true;
   }
   assert(threwOnBadAllParticipants);
+
+  // 10. Test loading collect_camera_orientation with non-boolean
+  {
+    std::ofstream badFile(tempConfigPath);
+    badFile << "{ \"collect_camera_orientation\": 123 }";
+    badFile.close();
+  }
+  bool threwOnBadCollectCamera = false;
+  try {
+    LoadPluginConfig(tempConfigPath);
+  } catch (const std::runtime_error&) {
+    threwOnBadCollectCamera = true;
+  }
+  assert(threwOnBadCollectCamera);
 
   // Cleanup
   std::filesystem::remove(tempConfigPath, ec);
@@ -961,6 +978,277 @@ void TestCommandSinkSignalling() {
   std::cout << "TestCommandSinkSignalling passed!" << std::endl;
 }
 
+void Require(bool cond, const char* expr) {
+  if (!cond) {
+    throw std::runtime_error(std::string("Test assertion failed: ") + expr);
+  }
+}
+#define TEST_REQUIRE(expr) Require((expr), #expr)
+
+void TestCameraConfigParsing() {
+  std::filesystem::path tempUserData = std::filesystem::path(GetCurrentModuleDirectory()) / L"test_cam_userdata";
+  std::error_code ec;
+  std::filesystem::remove_all(tempUserData, ec);
+  std::filesystem::create_directories(tempUserData / "player", ec);
+
+  // Write Config_DX11.ini
+  {
+    std::ofstream f(tempUserData / "Config_DX11.ini");
+    f << "//[[gMa1.002f (c)2016]]\n"
+      << "[COMPONENTS]\n"
+      << "VideoResW=2560\n"
+      << "VideoResH=1440\n"
+      << "WindowedMode=1\n"
+      << "Borderless=1\n"
+      << "SubViews=0\n"
+      << "UseSubViewParams=1\n"
+      << "ViewParams=(0.600, 0.340, 0.580, 45.000, 0.015) // comment with parens (m)\n"
+      << "LeftView=(0.600, 0.340, 0.580, 45.000, 0.015)\n"
+      << "RightView=(0.600, 0.340, 0.580, 45.000, 0.015)\n"
+      << "CustomVidRes=(0, 0)\n";
+  }
+
+  // Case 1: player.JSON has Vertical FOV Degrees = 9 (Default) and all_vehicles.ini has FOV=0 -> fallback_default 50.0
+  {
+    std::ofstream f(tempUserData / "player" / "player.JSON");
+    f << "{\n"
+      << "  \"DRIVER\": {\n"
+      << "    \"Vehicle File\": \"C:\\\\rf2\\\\Installed\\\\Vehicles\\\\KSP\\\\4.03\\\\25_KSP_IWC_5.VEH\"\n"
+      << "  },\n"
+      << "  \"Graphic Options\": {\n"
+      << "    \"Vertical FOV Degrees\": 9\n"
+      << "  }\n"
+      << "}\n";
+  }
+  {
+    std::ofstream f(tempUserData / "player" / "all_vehicles.ini");
+    f << "[VEHICLE]\n"
+      << "ID=10\n"
+      << "File=\"C:\\rf2\\Installed\\Vehicles\\KSP\\4.01\\25_KSP_IWC_5.VEH\"\n"
+      << "MetersDriven=100\n"
+      << "FOV=38\n\n"
+      << "[VEHICLE]\n"
+      << "ID=11\n"
+      << "File=\"C:\\rf2\\Installed\\Vehicles\\KSP\\4.03\\25_KSP_IWC_5.VEH\"\n"
+      << "MetersDriven=5000\n"
+      << "FOV=0\n";
+  }
+
+  std::string warn;
+  CameraProjectionInfo proj1 = ResolveCameraProjection(tempUserData, "player", "Josh Irfan #5", nullptr, &warn);
+  TEST_REQUIRE(proj1.enabled);
+  TEST_REQUIRE(IsClose(proj1.vfovDeg, 50.0));
+  TEST_REQUIRE(!warn.empty());
+  TEST_REQUIRE(proj1.resolutionW == 2560 && proj1.resolutionH == 1440);
+
+  // Case 2: player.JSON sets explicit Vertical FOV Degrees = 43 -> uses player.JSON FOV
+  {
+    std::ofstream f(tempUserData / "player" / "player.JSON");
+    f << "{\n"
+      << "  \"DRIVER\": {\n"
+      << "    \"Vehicle File\": \"C:\\\\rf2\\\\Installed\\\\Vehicles\\\\KSP\\\\4.03\\\\25_KSP_IWC_5.VEH\"\n"
+      << "  },\n"
+      << "  \"Graphic Options\": {\n"
+      << "    \"Vertical FOV Degrees\": 43\n"
+      << "  }\n"
+      << "}\n";
+  }
+  warn.clear();
+  CameraProjectionInfo proj2 = ResolveCameraProjection(tempUserData, "player", "Josh Irfan #5", nullptr, &warn);
+  TEST_REQUIRE(IsClose(proj2.vfovDeg, 43.0));
+  TEST_REQUIRE(warn.empty());
+
+  // Case 3: all_vehicles.ini sets per-vehicle FOV=36 on exact 4.03 path -> overrides player.JSON
+  {
+    std::ofstream f(tempUserData / "player" / "all_vehicles.ini");
+    f << "[VEHICLE]\n"
+      << "ID=11\n"
+      << "File=\"C:\\rf2\\Installed\\Vehicles\\KSP\\4.03\\25_KSP_IWC_5.VEH\"\n"
+      << "MetersDriven=5000\n"
+      << "FOV=36\n";
+  }
+  CameraProjectionInfo proj3 = ResolveCameraProjection(tempUserData, "player", "Josh Irfan #5", nullptr, &warn);
+  TEST_REQUIRE(IsClose(proj3.vfovDeg, 36.0));
+
+  // Case 4: CustomVidRes overrides VideoResW/VideoResH
+  {
+    std::ofstream f(tempUserData / "Config_DX11.ini");
+    f << "[COMPONENTS]\n"
+      << "VideoResW=1920\n"
+      << "VideoResH=1080\n"
+      << "CustomVidRes=(3440, 1440)\n";
+  }
+  CameraProjectionInfo proj4 = ResolveCameraProjection(tempUserData, "player", "Josh Irfan #5", nullptr, &warn);
+  TEST_REQUIRE(proj4.resolutionW == 3440 && proj4.resolutionH == 1440);
+
+  std::filesystem::remove_all(tempUserData, ec);
+  std::cout << "TestCameraConfigParsing passed!" << std::endl;
+}
+
+void TestCameraTelemetryEndToEnd() {
+  std::wstring moduleDir = GetCurrentModuleDirectory();
+  std::wstring configPath = GetConfigFilePath();
+  std::wstring tempRoot = moduleDir + L"\\test_cam_e2e";
+  std::wstring tempUserData = tempRoot + L"\\UserData";
+  std::wstring tempLogDir = tempUserData + L"\\BrBrDbTelemetry";
+  std::error_code ec;
+  std::filesystem::remove_all(tempRoot, ec);
+  std::filesystem::create_directories(tempUserData + L"\\player", ec);
+  std::filesystem::create_directories(tempLogDir, ec);
+
+  {
+    std::ofstream f(std::filesystem::path(tempUserData) / "Config_DX11.ini");
+    f << "[COMPONENTS]\n"
+      << "VideoResW=1920\n"
+      << "VideoResH=1080\n"
+      << "SubViews=0\n"
+      << "ViewParams=(0.540, 0.340, 0.600, 15.000, 0.037)\n";
+  }
+  {
+    std::ofstream f(std::filesystem::path(tempUserData) / "player" / "player.JSON");
+    f << "{ \"Graphic Options\": { \"Vertical FOV Degrees\": 48 } }\n";
+  }
+
+  std::wstring backupConfigPath = configPath + L".bak";
+  if (std::filesystem::exists(configPath)) {
+    std::filesystem::copy_file(configPath, backupConfigPath, std::filesystem::copy_options::overwrite_existing, ec);
+  }
+
+  PluginConfig testConfig;
+  testConfig.carNameRegexp = ".*";
+  testConfig.allParticipantsInRace = false;
+  testConfig.collectCameraOrientation = true;
+  testConfig.league = "kartsim";
+  SinkConfig fSink;
+  fSink.type = "file";
+  fSink.path = std::filesystem::path(tempLogDir).string();
+  fSink.enabled = true;
+  testConfig.sinks.push_back(fSink);
+  SavePluginConfig(configPath, testConfig);
+
+  {
+    BrBrDbTelemetryPlugin plugin(tempLogDir);
+    plugin.Startup(7);
+    TEST_REQUIRE(plugin.WantsGraphicsUpdates() == true);
+
+    EnvironmentInfoV01 env = {};
+    std::string userDataStr = std::filesystem::path(tempUserData).string();
+    env.mPath[0] = userDataStr.c_str();
+    plugin.SetEnvironment(env);
+
+    ScoringInfoV01 scoring = {};
+    std::strcpy(scoring.mTrackName, "Buckmore Park");
+    std::strcpy(scoring.mPlrFileName, "player");
+    scoring.mSession = 1;
+    scoring.mNumVehicles = 1;
+
+    VehicleScoringInfoV01 vehicle = {};
+    vehicle.mID = 1;
+    std::strcpy(vehicle.mDriverName, "GazeDriver");
+    std::strcpy(vehicle.mVehicleName, "KSP Cadet #7");
+    std::strcpy(vehicle.mVehicleClass, "IAME Cadet");
+    vehicle.mIsPlayer = true;
+    scoring.mVehicle = &vehicle;
+
+    plugin.EnterRealtime();
+    plugin.UpdateScoring(scoring);
+
+    // 1. Cockpit camera (mCameraType = 1) rotated 90 deg around Y
+    GraphicsInfoV02 gfx = {};
+    gfx.mID = 1;
+    gfx.mCameraType = 1; // cockpit
+    gfx.mCamPos.Set(12.5, 0.85, -34.2);
+    gfx.mCamOri[0].Set(0.0, 0.0, 1.0);
+    gfx.mCamOri[1].Set(0.0, 1.0, 0.0);
+    gfx.mCamOri[2].Set(-1.0, 0.0, 0.0);
+    plugin.UpdateGraphics(gfx);
+
+    TelemInfoV01 telem = {};
+    telem.mID = 1;
+    telem.mElapsedTime = 1.0;
+    telem.mPos.Set(12.4, 0.2, -34.0);
+    telem.mOri[0].Set(1.0, 0.0, 0.0);
+    telem.mOri[1].Set(0.0, 1.0, 0.0);
+    telem.mOri[2].Set(0.0, 0.0, 1.0);
+    std::strcpy(telem.mVehicleName, "KSP Cadet #7");
+    std::strcpy(telem.mTrackName, "Buckmore Park");
+    plugin.UpdateTelemetry(telem);
+
+    // 2. Switch to Trackside camera (mCameraType = 4) -> camera channels must become NaN
+    gfx.mCameraType = 4;
+    plugin.UpdateGraphics(gfx);
+    telem.mElapsedTime = 1.01;
+    plugin.UpdateTelemetry(telem);
+
+    // 3. Switch back to TV Cockpit camera (mCameraType = 0) -> triggers keyframe recovery from NaN
+    gfx.mCameraType = 0;
+    gfx.mCamPos.Set(13.0, 0.90, -35.0);
+    plugin.UpdateGraphics(gfx);
+    telem.mElapsedTime = 1.02;
+    plugin.UpdateTelemetry(telem);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    plugin.ExitRealtime();
+    plugin.Shutdown();
+
+    std::string generatedFile;
+    for (const auto& entry : std::filesystem::directory_iterator(tempLogDir)) {
+      if (entry.path().filename().string().find(".brt1.br") != std::string::npos) {
+        generatedFile = entry.path().string();
+        break;
+      }
+    }
+    TEST_REQUIRE(!generatedFile.empty());
+
+    std::string decompressed = DecompressBrotliFile(generatedFile);
+    TEST_REQUIRE(!decompressed.empty());
+
+    Brt1StreamDecoder decoder;
+    decoder.Feed(decompressed);
+    std::unordered_map<std::string, double> rec;
+    std::string err;
+
+    TEST_REQUIRE(decoder.Step(rec, err) == Brt1StreamDecoder::StepResult::MagicReceived);
+    TEST_REQUIRE(decoder.Step(rec, err) == Brt1StreamDecoder::StepResult::MetadataReceived);
+    TEST_REQUIRE(decoder.GetChannels().size() == 68);
+    TEST_REQUIRE(decoder.GetMetadata().cameraProjection.enabled);
+    TEST_REQUIRE(IsClose(decoder.GetMetadata().cameraProjection.vfovDeg, 48.0));
+    TEST_REQUIRE(decoder.GetMetadata().cameraProjection.resolutionW == 1920);
+    TEST_REQUIRE(decoder.GetMetadata().cameraProjection.resolutionH == 1080);
+
+    // Sample 1: valid cockpit camera
+    TEST_REQUIRE(decoder.Step(rec, err) == Brt1StreamDecoder::StepResult::BaselineReceived);
+    TEST_REQUIRE(IsClose(rec["Cam Pos X"], 12.5, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Cam Pos Y"], 0.85, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Cam Pos Z"], -34.2, 1e-3));
+    TEST_REQUIRE(IsClose(std::abs(rec["Cam Quat Y"]), 0.70710678, 1e-3));
+    TEST_REQUIRE(IsClose(std::abs(rec["Cam Quat W"]), 0.70710678, 1e-3));
+
+    // Sample 2: trackside camera -> NaN
+    TEST_REQUIRE(decoder.Step(rec, err) == Brt1StreamDecoder::StepResult::SampleDecoded);
+    TEST_REQUIRE(std::isnan(rec["Cam Pos X"]));
+    TEST_REQUIRE(std::isnan(rec["Cam Quat W"]));
+
+    // Sample 3: TV cockpit -> Baseline keyframe with recovered camera values
+    TEST_REQUIRE(decoder.Step(rec, err) == Brt1StreamDecoder::StepResult::BaselineReceived);
+    TEST_REQUIRE(IsClose(rec["Cam Pos X"], 13.0, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Cam Pos Y"], 0.90, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Cam Pos Z"], -35.0, 1e-3));
+    TEST_REQUIRE(!std::isnan(rec["Cam Quat W"]));
+
+    TEST_REQUIRE(decoder.Step(rec, err) == Brt1StreamDecoder::StepResult::EndOfStream);
+  }
+
+  if (std::filesystem::exists(backupConfigPath)) {
+    std::filesystem::copy_file(backupConfigPath, configPath, std::filesystem::copy_options::overwrite_existing, ec);
+    std::filesystem::remove(backupConfigPath, ec);
+  } else {
+    std::filesystem::remove(configPath, ec);
+  }
+  std::filesystem::remove_all(tempRoot, ec);
+  std::cout << "TestCameraTelemetryEndToEnd passed!" << std::endl;
+}
+
 int main() {
   std::cout << "Running unit tests for BRT1 Protocol..." << std::endl;
   TestBrt1FramingAndMagic();
@@ -997,6 +1285,10 @@ int main() {
 
   std::cout << "Running unit tests for SinkWorkerGracefulDrain..." << std::endl;
   TestSinkWorkerGracefulDrain();
+
+  std::cout << "Running unit tests for CameraConfigParsing & CameraTelemetryEndToEnd..." << std::endl;
+  TestCameraConfigParsing();
+  TestCameraTelemetryEndToEnd();
 
   std::cout << "All unit tests passed successfully!" << std::endl;
   return 0;

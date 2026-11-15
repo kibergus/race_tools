@@ -89,6 +89,24 @@ const std::vector<Brt1Channel>& GetDefaultBrt1Channels() {
   return channels;
 }
 
+const std::vector<Brt1Channel>& GetBrt1Channels(bool includeCamera) {
+  if (!includeCamera) {
+    return GetDefaultBrt1Channels();
+  }
+  static const std::vector<Brt1Channel> cameraChannels = []() {
+    std::vector<Brt1Channel> ch = GetDefaultBrt1Channels();
+    ch.push_back({"Cam Pos X", 0.001});
+    ch.push_back({"Cam Pos Y", 0.001});
+    ch.push_back({"Cam Pos Z", 0.001});
+    ch.push_back({"Cam Quat X", 0.0001});
+    ch.push_back({"Cam Quat Y", 0.0001});
+    ch.push_back({"Cam Quat Z", 0.0001});
+    ch.push_back({"Cam Quat W", 0.0001});
+    return ch;
+  }();
+  return cameraChannels;
+}
+
 std::string FrameBrt1Chunk(uint8_t type, const void* payload, uint16_t len) {
   std::string chunk;
   chunk.resize(3 + len);
@@ -137,6 +155,13 @@ std::string Brt1StreamEncoder::EncodeMetadataChunk(const Brt1SessionMetadata& me
   }
   if (!metadata.trackConfiguration.empty()) {
     meta["Track configuration"] = metadata.trackConfiguration;
+  }
+  if (metadata.cameraProjection.enabled) {
+    const auto& cp = metadata.cameraProjection;
+    meta["camera_projection"] = {
+      {"vfov_deg", cp.vfovDeg},
+      {"resolution_px", {cp.resolutionW, cp.resolutionH}}
+    };
   }
   j["metadata"] = meta;
 
@@ -244,6 +269,11 @@ void Brt1StreamEncoder::Reset() {
   samplesSinceKeyframe_ = 0;
 }
 
+void Brt1StreamEncoder::SetChannels(std::vector<Brt1Channel> channels) {
+  channels_ = std::move(channels);
+  Reset();
+}
+
 void Brt1StreamEncoder::ResetDeltaState() {
   hasBaseline_ = false;
   trackedValues_.clear();
@@ -311,6 +341,16 @@ Brt1StreamDecoder::StepResult Brt1StreamDecoder::Step(std::unordered_map<std::st
         metadata_.sessionId = m.value("Session ID", "");
         metadata_.kartNumber = m.value("kart_number", "");
         metadata_.trackConfiguration = m.value("Track configuration", "");
+        metadata_.cameraProjection = CameraProjectionInfo{};
+        if (m.contains("camera_projection") && m["camera_projection"].is_object()) {
+          const auto& cp = m["camera_projection"];
+          metadata_.cameraProjection.enabled = true;
+          metadata_.cameraProjection.vfovDeg = cp.value("vfov_deg", 50.0);
+          if (cp.contains("resolution_px") && cp["resolution_px"].is_array() && cp["resolution_px"].size() == 2) {
+            metadata_.cameraProjection.resolutionW = cp["resolution_px"][0].get<int>();
+            metadata_.cameraProjection.resolutionH = cp["resolution_px"][1].get<int>();
+          }
+        }
       }
       channels_.clear();
       if (j.contains("channels") && j["channels"].is_array()) {

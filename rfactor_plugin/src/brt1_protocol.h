@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include "camera_config.h"
 
 namespace race_tools {
 
@@ -48,10 +49,14 @@ struct Brt1SessionMetadata {
   std::string sessionId;
   std::string kartNumber;
   std::string trackConfiguration;
+  CameraProjectionInfo cameraProjection;
 };
 
 // Returns standard 61 channels for rFactor telemetry
 const std::vector<Brt1Channel>& GetDefaultBrt1Channels();
+
+// Returns 61 standard channels, plus 7 camera pose/orientation channels when includeCamera is true
+const std::vector<Brt1Channel>& GetBrt1Channels(bool includeCamera);
 
 // Returns a framed BRT1 chunk: [length (2B le)] + [type (1B)] + [payload]
 std::string FrameBrt1Chunk(uint8_t type, const void* payload, uint16_t len);
@@ -82,6 +87,9 @@ public:
 
   // Resets full encoder state
   void Reset();
+
+  // Updates active channel list and resets encoder state
+  void SetChannels(std::vector<Brt1Channel> channels);
 
   // Resets delta tracking so the very next sample is emitted as a Baseline chunk
   void ResetDeltaState();

@@ -61,6 +61,7 @@ public:
     std::chrono::system_clock::time_point sessionStartTime;
     std::string participantTag = "";
     SessionMetadata metadata = {};
+    bool collectCameraOrientation = false;
   };
 
   // A chunk of metadata or CSV telemetry to be written to the sink.
