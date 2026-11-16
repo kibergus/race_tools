@@ -172,7 +172,7 @@ private:
 
   void LoadAndApplyConfig();
   std::filesystem::path ResolveUserDataDirectoryLocked() const;
-  void LoggerThreadWorker();
+  void LoggerThreadWorker(SafeQueue<QueuedTelemetryItem>::Reader reader);
   void ExtractTelemetryData(const TelemInfoV01& info,
                             const std::chrono::system_clock::time_point& sessionStartTime,
                             double startElapsedTime,

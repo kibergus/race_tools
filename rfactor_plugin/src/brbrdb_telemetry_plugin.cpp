@@ -190,8 +190,10 @@ void BrBrDbTelemetryPlugin::Startup(long version) {
     LoadAndApplyConfig();
 
     // 3. Start the background telemetry logging thread
+    // Register the reader before spawning the thread so early Push() calls cannot be missed.
     loggingActive_ = true;
-    loggerThread_ = std::thread(&BrBrDbTelemetryPlugin::LoggerThreadWorker, this);
+    auto reader = telemetryQueue_.reader();
+    loggerThread_ = std::thread(&BrBrDbTelemetryPlugin::LoggerThreadWorker, this, std::move(reader));
   } catch (const std::exception& e) {
     MessageBoxA(NULL, (std::string("Fatal error during plugin startup: ") + e.what()).c_str(),
                 "BrBrDb Telemetry - Fatal Error", MB_OK | MB_ICONERROR);
@@ -453,9 +455,8 @@ void BrBrDbTelemetryPlugin::UpdateScoring(const ScoringInfoV01& info) {
 // Telemetry Parsing & CSV Export Logic
 // -------------------------------------------------------------
 
-void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
+void BrBrDbTelemetryPlugin::LoggerThreadWorker(SafeQueue<QueuedTelemetryItem>::Reader reader) {
   QueuedTelemetryItem queuedItem;
-  auto reader = telemetryQueue_.reader();
 
   const std::string csvColumnHeadersBase =
       "Time,x,z,Speed,GForceLat,GForceLon,GForceVert,Throttle,Brake,Steering Angle,Clutch,Gear,"
@@ -473,11 +474,7 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker() {
       "Tyre Surf Temp FL,Tyre Surf Temp FR,Tyre Surf Temp RL,Tyre Surf Temp RR,"
       "Tyre Carcass Temp FL,Tyre Carcass Temp FR,Tyre Carcass Temp RL,Tyre Carcass Temp RR";
 
-  while (loggingActive_) {
-    // Block and wait for telemetry structures to arrive in queue using the reader
-    if (!reader.Pop(queuedItem)) {
-      break; // Shutdown signal received
-    }
+  while (reader.Pop(queuedItem)) {
 
     const TelemInfoV01& info = queuedItem.info;
     if (info.mElapsedTime < 0.0) // Sentinel value to close session

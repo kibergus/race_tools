@@ -1250,46 +1250,51 @@ void TestCameraTelemetryEndToEnd() {
 }
 
 int main() {
-  std::cout << "Running unit tests for BRT1 Protocol..." << std::endl;
-  TestBrt1FramingAndMagic();
-  TestBrt1StreamRoundTrip();
-  TestBrt1NaNAndKeyframeHandling();
-  TestFileSinkBrotliBrt1();
-  TestCommandSinkSignalling();
-  std::cout << "Running unit tests for MatrixToQuaternion..." << std::endl;
-  TestIdentityMatrix();
-  TestRotation90X();
-  TestRotation90Y();
-  TestRotation90Z();
+  try {
+    std::cout << "Running unit tests for BRT1 Protocol..." << std::endl;
+    TestBrt1FramingAndMagic();
+    TestBrt1StreamRoundTrip();
+    TestBrt1NaNAndKeyframeHandling();
+    TestFileSinkBrotliBrt1();
+    TestCommandSinkSignalling();
+    std::cout << "Running unit tests for MatrixToQuaternion..." << std::endl;
+    TestIdentityMatrix();
+    TestRotation90X();
+    TestRotation90Y();
+    TestRotation90Z();
 
-  std::cout << "Running unit tests for ParseServerAddress..." << std::endl;
-  TestParseServerAddress();
+    std::cout << "Running unit tests for ParseServerAddress..." << std::endl;
+    TestParseServerAddress();
 
-  std::cout << "Running unit tests for PluginConfig (JSON)..." << std::endl;
-  TestConfigLoadSave();
+    std::cout << "Running unit tests for PluginConfig (JSON)..." << std::endl;
+    TestConfigLoadSave();
 
-  std::cout << "Running unit tests for Logger Critical Error..." << std::endl;
-  TestLoggerCriticalError();
+    std::cout << "Running unit tests for Logger Critical Error..." << std::endl;
+    TestLoggerCriticalError();
 
-  std::cout << "Running unit tests for RetryBackoff..." << std::endl;
-  TestRetryBackoff();
+    std::cout << "Running unit tests for RetryBackoff..." << std::endl;
+    TestRetryBackoff();
 
-  std::cout << "Running unit tests for SanitizeFilename..." << std::endl;
-  TestSanitizeFilename();
+    std::cout << "Running unit tests for SanitizeFilename..." << std::endl;
+    TestSanitizeFilename();
 
-  std::cout << "Running unit tests for MultiParticipantTelemetry..." << std::endl;
-  TestMultiParticipantTelemetry();
+    std::cout << "Running unit tests for MultiParticipantTelemetry..." << std::endl;
+    TestMultiParticipantTelemetry();
 
-  std::cout << "Running unit tests for PlayerOnlyTelemetry..." << std::endl;
-  TestPlayerOnlyTelemetry();
+    std::cout << "Running unit tests for PlayerOnlyTelemetry..." << std::endl;
+    TestPlayerOnlyTelemetry();
 
-  std::cout << "Running unit tests for SinkWorkerGracefulDrain..." << std::endl;
-  TestSinkWorkerGracefulDrain();
+    std::cout << "Running unit tests for SinkWorkerGracefulDrain..." << std::endl;
+    TestSinkWorkerGracefulDrain();
 
-  std::cout << "Running unit tests for CameraConfigParsing & CameraTelemetryEndToEnd..." << std::endl;
-  TestCameraConfigParsing();
-  TestCameraTelemetryEndToEnd();
+    std::cout << "Running unit tests for CameraConfigParsing & CameraTelemetryEndToEnd..." << std::endl;
+    TestCameraConfigParsing();
+    TestCameraTelemetryEndToEnd();
 
-  std::cout << "All unit tests passed successfully!" << std::endl;
-  return 0;
+    std::cout << "All unit tests passed successfully!" << std::endl;
+    return 0;
+  } catch (const std::exception& e) {
+    std::cerr << "Test failed with exception: " << e.what() << std::endl;
+    return 1;
+  }
 }
