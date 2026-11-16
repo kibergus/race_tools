@@ -1197,7 +1197,7 @@ class TobiiStudioApp:
             return
         confirm = messagebox.askyesno(
             'Reset Screen Calibration',
-            'Remove the saved in-app calibration profile and restore the tracker\'s '
+            "Remove the saved in-app calibration profile and restore the tracker's "
             'original display area?',
         )
         if not confirm:
@@ -1248,7 +1248,7 @@ class TobiiStudioApp:
         tk.Label(
             dlg,
             text=(
-                'Solves your screen\'s exact 3D position, distance, and upward tracker tilt\n'
+                "Solves your screen's exact 3D position, distance, and upward tracker tilt\n"
                 '(including above-wheel sim-rig mounts with distant TVs) plus personal eye\n'
                 'offset, programming the 3D display plane directly into the EyeChip hardware.'
             ),
