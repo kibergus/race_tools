@@ -66,6 +66,7 @@ Thumbs.db
 data/
 tobii/models/*.task
 tobii/calibration_profile.json
+live_feedback/live_feedback_config.json
 *.jpeg
 *_tune.html
 

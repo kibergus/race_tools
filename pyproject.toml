@@ -47,8 +47,8 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["race_tools*", "spikerbit*", "tobii*"]
+include = ["race_tools*", "spikerbit*", "tobii*", "live_feedback*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "strength_training", "spikerbit/tests", "tobii/tests"]
+testpaths = ["tests", "strength_training", "spikerbit/tests", "tobii/tests", "live_feedback/tests"]
 python_files = ["test_*.py"]
