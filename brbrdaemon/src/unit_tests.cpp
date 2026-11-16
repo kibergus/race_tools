@@ -285,6 +285,38 @@ void TestFormatTelemetryLine() {
   TelemetryCollector::ExtractTelemetryData(phys, ug, realTime, steadyStart, steadyNow, values, csvOut);
   TEST_ASSERT(!values.empty(), "Extracted values should not be empty");
   TEST_ASSERT(std::abs(values[0] - 1.5) < 1e-6, "BRT1 Time channel (values[0]) must be elapsed seconds since session start (1.5s)");
+
+  // Verify BRT1 channels include Local Ori Quat X/Y/Z/W
+  const auto& channels = GetBrBrDaemonBrt1Channels();
+  bool hasLocalOriX = false, hasLocalOriY = false, hasLocalOriZ = false, hasLocalOriW = false;
+  for (const auto& ch : channels) {
+    if (ch.name == "Local Ori Quat X") hasLocalOriX = true;
+    if (ch.name == "Local Ori Quat Y") hasLocalOriY = true;
+    if (ch.name == "Local Ori Quat Z") hasLocalOriZ = true;
+    if (ch.name == "Local Ori Quat W") hasLocalOriW = true;
+  }
+  TEST_ASSERT(hasLocalOriX && hasLocalOriY && hasLocalOriZ && hasLocalOriW,
+              "GetBrBrDaemonBrt1Channels must emit Local Ori Quat X/Y/Z/W");
+
+  // Verify NED + FRD quaternion conventions for AC heading:
+  // heading = PI (facing -Z Game North) -> (0, 0, 0, 1)
+  constexpr double kPi = 3.14159265358979323846;
+  phys.heading = static_cast<float>(kPi);
+  phys.pitch = 0.0f;
+  phys.roll = 0.0f;
+  TelemetryCollector::ExtractTelemetryData(phys, ug, realTime, steadyStart, steadyNow, values, csvOut);
+  TEST_ASSERT(std::abs(values[17] - 0.0) < 1e-5, "North qx == 0");
+  TEST_ASSERT(std::abs(values[18] - 0.0) < 1e-5, "North qy == 0");
+  TEST_ASSERT(std::abs(values[19] - 0.0) < 1e-5, "North qz == 0");
+  TEST_ASSERT(std::abs(values[20] - 1.0) < 1e-5, "North qw == 1");
+
+  // heading = -PI / 2 (facing +X Game East) -> (0, 0, +0.70710678, +0.70710678)
+  phys.heading = static_cast<float>(-kPi / 2.0);
+  TelemetryCollector::ExtractTelemetryData(phys, ug, realTime, steadyStart, steadyNow, values, csvOut);
+  TEST_ASSERT(std::abs(values[17] - 0.0) < 1e-5, "East qx == 0");
+  TEST_ASSERT(std::abs(values[18] - 0.0) < 1e-5, "East qy == 0");
+  TEST_ASSERT(std::abs(values[19] - 0.70710678) < 1e-5, "East qz == +0.70710678");
+  TEST_ASSERT(std::abs(values[20] - 0.70710678) < 1e-5, "East qw == +0.70710678");
 }
 
 void TestTelemetryCollectorWithMockSim() {

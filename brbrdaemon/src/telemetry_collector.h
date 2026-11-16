@@ -80,7 +80,9 @@ public:
       std::chrono::steady_clock::time_point sessionStartSteadyTime,
       std::chrono::steady_clock::time_point nowSteadyTime,
       std::vector<double>& outValues,
-      std::string& outCsvLine);
+      std::string& outCsvLine,
+      bool* hasPrevOriQuat = nullptr,
+      double prevOriQuat[4] = nullptr);
 
   // Formats a single CSV line for testing or output (UnifiedGraphicInfo)
   static std::string FormatTelemetryLine(
@@ -142,6 +144,9 @@ private:
   // Sinks & queues for active session
   std::shared_ptr<SafeQueue<Sink::Message>> sessionQueue_;
   std::vector<std::unique_ptr<SinkWorker>> sinkWorkers_;
+
+  bool hasPrevOriQuat_ = false;
+  double prevOriQuat_[4] = {0.0, 0.0, 0.0, 1.0};
 };
 
 } // namespace race_tools

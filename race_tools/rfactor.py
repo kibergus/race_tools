@@ -208,8 +208,8 @@ def unproject_rfactor_gaze_ray(
 ) -> tuple[float, float, float]:
     """
     Unproject normalized screen gaze coordinates (u, v in [0, 1], top-left origin)
-    into a unit 3D gaze ray in rFactor 2's local camera frame
-    (+x = Left, +y = Up, +z = Back; optical axis = -z).
+    into a unit 3D gaze ray in FRD camera coordinates
+    (+x = Forward, +y = Right, +z = Down).
     """
     if math.isnan(u) or math.isnan(v):
         return math.nan, math.nan, math.nan
@@ -218,43 +218,18 @@ def unproject_rfactor_gaze_ray(
     tan_half_vfov = math.tan(half_vfov_rad)
     tan_half_hfov = projection.aspect_ratio * tan_half_vfov
 
-    # Screen right (u > 0.5) maps to -x in isiMotor local coordinates (+x is Left)
-    dx = -(2.0 * u - 1.0) * tan_half_hfov
-    dy = (1.0 - 2.0 * v) * tan_half_vfov
-    dz = -1.0
+    dx = 1.0
+    dy = (2.0 * u - 1.0) * tan_half_hfov
+    dz = (2.0 * v - 1.0) * tan_half_vfov
 
     norm = math.sqrt(dx * dx + dy * dy + dz * dz)
     if norm <= 0.0:
-        return 0.0, 0.0, -1.0
+        return 1.0, 0.0, 0.0
     return dx / norm, dy / norm, dz / norm
 
 
-def quat_to_rfactor_matrix(
-    qx: float,
-    qy: float,
-    qz: float,
-    qw: float,
-) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
-    """
-    Convert an (x, y, z, w) quaternion emitted by MatrixToQuaternion into the 3x3
-    rFactor orientation matrix rows (matching TelemQuat::ConvertQuatToMat in InternalsPlugin.hpp).
-
-    Dot-multiplying row 0, 1, 2 with a local vector produces world (X, Y, Z).
-    """
-    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-    if norm <= 0.0 or math.isnan(norm):
-        raise ValueError('Invalid zero or NaN quaternion.')
-    qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
-
-    x2, y2, z2 = qx + qx, qy + qy, qz + qz
-    xx, yy, zz = qx * x2, qy * y2, qz * z2
-    xz, xy, yz = qx * z2, qx * y2, qy * z2
-    wx, wy, wz = qw * x2, qw * y2, qw * z2
-
-    row0 = (1.0 - (yy + zz), xy - wz, xz + wy)
-    row1 = (xy + wz, 1.0 - (xx + zz), yz - wx)
-    row2 = (xz - wy, yz + wx, 1.0 - (xx + yy))
-    return row0, row1, row2
+unproject_gaze_ray_frd = unproject_rfactor_gaze_ray
+quat_to_rfactor_matrix = track_data.quat_to_ned_matrix
 
 
 def slerp_quat(
@@ -319,39 +294,67 @@ def rfactor_direction_to_gps_bearing(
 
 
 def reconstruct_kart_heading(
-    ori_quat: tuple[float, float, float, float],
+    local_ori_quat: tuple[float, float, float, float],
     origin: track_data.TrackOrigin,
 ) -> float:
     """
     Compute the kart chassis GPS compass heading in [0.0, 360.0) degrees clockwise from North
-    from 'Ori Quat X/Y/Z/W'.
+    from 'Local Ori Quat X/Y/Z/W' (Game NED + FRD).
     """
-    qx, qy, qz, qw = ori_quat
-    if any(math.isnan(c) for c in (qx, qy, qz, qw)):
-        return math.nan
-
-    row0, _, row2 = quat_to_rfactor_matrix(qx, qy, qz, qw)
-    # Local forward in isiMotor vehicle coordinates is (0, 0, -1)
-    world_fx = -row0[2]
-    world_fz = -row2[2]
-    return rfactor_direction_to_gps_bearing(world_fx, world_fz, origin)
+    geo_quat = track_data.local_ned_quat_to_geodetic_ned(local_ori_quat, origin)
+    return track_data.ned_quat_to_heading_deg(geo_quat)
 
 
 def reconstruct_gaze_map_yaw(
     gaze_x: float,
     gaze_y: float,
-    cam_quat: tuple[float, float, float, float],
+    local_cam_quat: tuple[float, float, float, float],
     projection: RFactorCameraProjection | Mapping[str, Any],
     origin: track_data.TrackOrigin,
 ) -> float:
     """
     Reconstruct the GPS map compass bearing (in [0.0, 360.0) degrees clockwise from North)
     of a driver's 3D gaze ray from eye-tracker normalized coordinates (Gaze X, Gaze Y in [0, 1]),
-    rFactor 2 driving camera orientation quaternion (Cam Quat X/Y/Z/W), camera projection
-    metadata, and track GPS origin.
+    driving camera orientation quaternion ('Local Cam Quat X/Y/Z/W', Game NED + FRD),
+    camera projection metadata, and track GPS origin.
 
     Returns math.nan if gaze or camera quaternion contains NaN (e.g. blink or trackside camera),
     or if the gaze ray points vertically with zero horizontal projection.
+    """
+    qx, qy, qz, qw = local_cam_quat
+    if math.isnan(gaze_x) or math.isnan(gaze_y) or any(math.isnan(c) for c in (qx, qy, qz, qw)):
+        return math.nan
+
+    proj = (
+        projection
+        if isinstance(projection, RFactorCameraProjection)
+        else RFactorCameraProjection.from_metadata(projection)
+    )
+
+    ray_x, ray_y, ray_z = unproject_rfactor_gaze_ray(gaze_x, gaze_y, proj)
+    if math.isnan(ray_x):
+        return math.nan
+
+    geo_quat = track_data.local_ned_quat_to_geodetic_ned(local_cam_quat, origin)
+    row0, row1, _ = track_data.quat_to_ned_matrix(*geo_quat)
+    d_north = row0[0] * ray_x + row0[1] * ray_y + row0[2] * ray_z
+    d_east = row1[0] * ray_x + row1[1] * ray_y + row1[2] * ray_z
+    if math.hypot(d_east, d_north) < 1e-9:
+        return math.nan
+
+    return math.degrees(math.atan2(d_east, d_north)) % 360.0
+
+
+def reconstruct_gaze_pitch_deg(
+    gaze_x: float,
+    gaze_y: float,
+    cam_quat: tuple[float, float, float, float],
+    projection: RFactorCameraProjection | Mapping[str, Any],
+) -> float:
+    """
+    Reconstruct the vertical gaze pitch angle in degrees (positive = looking up)
+    from eye-tracker normalized coordinates (Gaze X, Gaze Y in [0, 1]),
+    camera orientation quaternion (NED + FRD), and camera projection metadata.
     """
     qx, qy, qz, qw = cam_quat
     if math.isnan(gaze_x) or math.isnan(gaze_y) or any(math.isnan(c) for c in (qx, qy, qz, qw)):
@@ -367,10 +370,6 @@ def reconstruct_gaze_map_yaw(
     if math.isnan(ray_x):
         return math.nan
 
-    row0, _, row2 = quat_to_rfactor_matrix(qx, qy, qz, qw)
-    world_dx = row0[0] * ray_x + row0[1] * ray_y + row0[2] * ray_z
-    world_dz = row2[0] * ray_x + row2[1] * ray_y + row2[2] * ray_z
-    if math.hypot(world_dx, world_dz) < 1e-9:
-        return math.nan
-
-    return rfactor_direction_to_gps_bearing(world_dx, world_dz, origin)
+    _, _, row2 = track_data.quat_to_ned_matrix(qx, qy, qz, qw)
+    d_down = row2[0] * ray_x + row2[1] * ray_y + row2[2] * ray_z
+    return math.degrees(math.asin(max(-1.0, min(1.0, -d_down))))

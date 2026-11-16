@@ -109,23 +109,26 @@ def test_unproject_rfactor_gaze_ray():
         vfov_deg=60.0,
         resolution_px=(1920, 1080),
     )
-    # Screen center -> straight forward along -z
+    # Screen center -> straight forward along +x in FRD
     rx, ry, rz = rfactor.unproject_rfactor_gaze_ray(0.5, 0.5, proj)
-    assert rx == pytest.approx(0.0)
+    assert rx == pytest.approx(1.0)
     assert ry == pytest.approx(0.0)
-    assert rz == pytest.approx(-1.0)
+    assert rz == pytest.approx(0.0)
 
-    # Top-center (u=0.5, v=0.0) -> pitched up by vfov/2 = 30 deg
+    # Top-center (u=0.5, v=0.0) -> pitched up (-z in FRD) by vfov/2 = 30 deg
     tx, ty, tz = rfactor.unproject_rfactor_gaze_ray(0.5, 0.0, proj)
-    assert tx == pytest.approx(0.0)
-    assert math.degrees(math.atan2(ty, -tz)) == pytest.approx(30.0)
+    assert tx > 0.0
+    assert ty == pytest.approx(0.0)
+    assert tz < 0.0
+    assert math.degrees(math.atan2(-tz, tx)) == pytest.approx(30.0)
 
-    # Right-center (u=1.0, v=0.5) -> local right (-x), horizontal half-FOV = atan((16/9)*tan(30 deg))
+    # Right-center (u=1.0, v=0.5) -> local right (+y in FRD), horizontal half-FOV = atan((16/9)*tan(30 deg))
     expected_half_hfov = math.degrees(math.atan((16.0 / 9.0) * math.tan(math.radians(30.0))))
     gx, gy, gz = rfactor.unproject_rfactor_gaze_ray(1.0, 0.5, proj)
-    assert gx < 0.0
-    assert gy == pytest.approx(0.0)
-    assert math.degrees(math.atan2(-gx, -gz)) == pytest.approx(expected_half_hfov)
+    assert gx > 0.0
+    assert gy > 0.0
+    assert gz == pytest.approx(0.0)
+    assert math.degrees(math.atan2(gy, gx)) == pytest.approx(expected_half_hfov)
 
     # NaN blink propagation
     nx, ny, nz = rfactor.unproject_rfactor_gaze_ray(math.nan, 0.5, proj)
@@ -153,17 +156,17 @@ def test_reconstruct_gaze_map_yaw_consistency_with_gps():
         resolution_px=(1920, 1080),
     )
 
-    # Identity quaternion: local forward (0, 0, -1) -> world (0, 0, -1) (South before track correction)
-    # Buckmore Park has angle_deg = -2.0, so world South (180 deg) maps to 180 - (-2) = 182.0 deg!
+    # Identity quaternion (NED + FRD): faces Game North (+Z_rf).
+    # Buckmore Park has angle_deg = -2.0, so Game North maps to 0 - (-2) = 2.0 deg compass bearing!
     q_identity = (0.0, 0.0, 0.0, 1.0)
     kart_hdg = rfactor.reconstruct_kart_heading(q_identity, origin)
     gaze_center = rfactor.reconstruct_gaze_map_yaw(0.5, 0.5, q_identity, proj, origin)
-    assert kart_hdg == pytest.approx(182.0)
+    assert kart_hdg == pytest.approx(2.0)
     assert gaze_center == pytest.approx(kart_hdg)
 
-    # Verify exact match with finite-step GPS bearing from rfactor_to_gps
+    # Verify exact match with finite-step GPS bearing from rfactor_to_gps along Game North (0, +10)
     lat0, lon0 = rfactor.rfactor_to_gps(0.0, 0.0, origin)
-    lat1, lon1 = rfactor.rfactor_to_gps(0.0, -10.0, origin)
+    lat1, lon1 = rfactor.rfactor_to_gps(0.0, 10.0, origin)
     m_lat, m_lon = track_data.wgs84_meters_per_degree(origin.lat)
     gps_brg = math.degrees(math.atan2((lon1 - lon0) * m_lon, (lat1 - lat0) * m_lat)) % 360.0
     assert gaze_center == pytest.approx(gps_brg, abs=1e-4)
@@ -176,14 +179,29 @@ def test_reconstruct_gaze_map_yaw_consistency_with_gps():
     )
     assert 20.0 < ((gaze_right - gaze_center) % 360.0) < 40.0
 
-    # Camera pitched down by 15 degrees around local +x axis: center gaze still has identical map yaw
+    # v < 0.5 pitches gaze up; v > 0.5 pitches gaze down
+    assert rfactor.reconstruct_gaze_pitch_deg(0.5, 0.0, q_identity, proj) == pytest.approx(25.0)
+    assert rfactor.reconstruct_gaze_pitch_deg(0.5, 1.0, q_identity, proj) == pytest.approx(-25.0)
+
+    # Clockwise Z_down yaw rotates 2 -> 92 -> 182 -> 272 deg
+    for yaw_deg, expected_hdg in [(0.0, 2.0), (90.0, 92.0), (180.0, 182.0), (270.0, 272.0)]:
+        yaw_rad = math.radians(yaw_deg)
+        q_yaw = (0.0, 0.0, math.sin(0.5 * yaw_rad), math.cos(0.5 * yaw_rad))
+        assert rfactor.reconstruct_kart_heading(q_yaw, origin) == pytest.approx(expected_hdg, abs=1e-6)
+        assert rfactor.reconstruct_gaze_map_yaw(0.5, 0.5, q_yaw, proj, origin) == pytest.approx(
+            expected_hdg, abs=1e-6
+        )
+
+    # Camera pitched down by 15 degrees around FRD +y (Right) axis: center gaze still has identical map yaw
     pitch_rad = math.radians(-15.0)
-    q_pitched = (math.sin(0.5 * pitch_rad), 0.0, 0.0, math.cos(0.5 * pitch_rad))
+    q_pitched = (0.0, math.sin(0.5 * pitch_rad), 0.0, math.cos(0.5 * pitch_rad))
     gaze_pitched_center = rfactor.reconstruct_gaze_map_yaw(0.5, 0.5, q_pitched, proj, origin)
     assert gaze_pitched_center == pytest.approx(gaze_center, abs=1e-6)
+    assert rfactor.reconstruct_gaze_pitch_deg(0.5, 0.5, q_pitched, proj) == pytest.approx(-15.0, abs=1e-6)
 
     # NaN inputs (blink or trackside camera) return NaN
     assert math.isnan(rfactor.reconstruct_gaze_map_yaw(math.nan, 0.5, q_identity, proj, origin))
     assert math.isnan(
         rfactor.reconstruct_gaze_map_yaw(0.5, 0.5, (math.nan, 0.0, 0.0, 1.0), proj, origin)
     )
+    assert math.isnan(rfactor.reconstruct_gaze_pitch_deg(math.nan, 0.5, q_identity, proj))

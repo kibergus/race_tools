@@ -100,6 +100,11 @@ struct ParticipantSession {
 
   SafeQueue<Sink::Message> csvQueue;
   std::vector<std::unique_ptr<SinkWorker>> sinkWorkers;
+
+  bool hasPrevOriQuat = false;
+  double prevOriQuat[4] = {0.0, 0.0, 0.0, 1.0};
+  bool hasPrevCamQuat = false;
+  double prevCamQuat[4] = {0.0, 0.0, 0.0, 1.0};
 };
 
 // The Telemetry Plugin Implementation Class
@@ -179,6 +184,7 @@ private:
                             unsigned char flag,
                             bool includeCamera,
                             const CameraPoseSnapshot* camera,
+                            ParticipantSession* session,
                             std::vector<double>& outValues,
                             std::string& outCsvLine);
   std::string FormatTelemetryLine(const TelemInfoV01& info,

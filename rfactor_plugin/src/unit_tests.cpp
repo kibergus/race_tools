@@ -134,6 +134,121 @@ void TestRotation90Z() {
   std::cout << "TestRotation90Z passed!" << std::endl;
 }
 
+void TestVehicleAndCameraNedFrdQuaternions() {
+  constexpr double kPi = 3.14159265358979323846;
+  auto deg2rad = [kPi](double d) { return d * kPi / 180.0; };
+  auto require = [](bool cond, const char* msg) {
+    if (!cond) {
+      throw std::runtime_error(msg);
+    }
+  };
+
+  // 1. Level facing Game North (+Z_rf) -> (0, 0, 0, 1)
+  {
+    TelemVect3 mOri[3];
+    mOri[0].Set(-1.0, 0.0, 0.0);
+    mOri[1].Set(0.0, 1.0, 0.0);
+    mOri[2].Set(0.0, 0.0, -1.0);
+    TelemVect3 mCamOri[3];
+    mCamOri[0].Set(1.0, 0.0, 0.0);
+    mCamOri[1].Set(0.0, 1.0, 0.0);
+    mCamOri[2].Set(0.0, 0.0, 1.0);
+
+    double vqx, vqy, vqz, vqw;
+    double cqx, cqy, cqz, cqw;
+    VehicleOriToNedQuaternion(mOri, vqx, vqy, vqz, vqw);
+    CameraOriToNedQuaternion(mCamOri, cqx, cqy, cqz, cqw);
+
+    require(IsClose(vqx, 0.0) && IsClose(vqy, 0.0) && IsClose(vqz, 0.0) && IsClose(vqw, 1.0), "Vehicle North");
+    require(IsClose(cqx, 0.0) && IsClose(cqy, 0.0) && IsClose(cqz, 0.0) && IsClose(cqw, 1.0), "Camera North");
+  }
+
+  // 2. Level facing Game East (+X_rf, +90 deg CW yaw) -> (0, 0, +0.70710678, +0.70710678)
+  {
+    TelemVect3 mOri[3];
+    mOri[0].Set(0.0, 0.0, -1.0);  // row 0: col0.x=0, col1.x=0, col2.x=-1
+    mOri[1].Set(0.0, 1.0, 0.0);   // row 1: col0.y=0, col1.y=1, col2.y=0
+    mOri[2].Set(1.0, 0.0, 0.0);   // row 2: col0.z=1, col1.z=0, col2.z=0
+    TelemVect3 mCamOri[3];
+    mCamOri[0].Set(0.0, 0.0, -1.0);
+    mCamOri[1].Set(0.0, 1.0, 0.0);
+    mCamOri[2].Set(1.0, 0.0, 0.0);
+
+    double vqx, vqy, vqz, vqw;
+    double cqx, cqy, cqz, cqw;
+    VehicleOriToNedQuaternion(mOri, vqx, vqy, vqz, vqw);
+    CameraOriToNedQuaternion(mCamOri, cqx, cqy, cqz, cqw);
+
+    require(IsClose(vqx, 0.0) && IsClose(vqy, 0.0), "Vehicle East XY");
+    require(IsClose(vqz, 0.70710678) && IsClose(vqw, 0.70710678), "Vehicle East ZW");
+    require(IsClose(cqx, 0.0) && IsClose(cqy, 0.0), "Camera East XY");
+    require(IsClose(cqz, 0.70710678) && IsClose(cqw, 0.70710678), "Camera East ZW");
+  }
+
+  // 3. Nose/camera pitched up +30 deg -> (0, +sin(15 deg), 0, cos(15 deg))
+  {
+    double a = deg2rad(30.0);
+    double ca = std::cos(a), sa = std::sin(a);
+    TelemVect3 mOri[3];
+    mOri[0].Set(-1.0, 0.0, 0.0);
+    mOri[1].Set(0.0, ca, -sa);
+    mOri[2].Set(0.0, -sa, -ca);
+    TelemVect3 mCamOri[3];
+    mCamOri[0].Set(1.0, 0.0, 0.0);
+    mCamOri[1].Set(0.0, ca, -sa);
+    mCamOri[2].Set(0.0, sa, ca);
+
+    double expectedY = std::sin(deg2rad(15.0));
+    double expectedW = std::cos(deg2rad(15.0));
+    double vqx, vqy, vqz, vqw;
+    double cqx, cqy, cqz, cqw;
+    VehicleOriToNedQuaternion(mOri, vqx, vqy, vqz, vqw);
+    CameraOriToNedQuaternion(mCamOri, cqx, cqy, cqz, cqw);
+
+    require(IsClose(vqx, 0.0) && IsClose(vqy, expectedY) && IsClose(vqz, 0.0) && IsClose(vqw, expectedW), "Vehicle Pitch");
+    require(IsClose(cqx, 0.0) && IsClose(cqy, expectedY) && IsClose(cqz, 0.0) && IsClose(cqw, expectedW), "Camera Pitch");
+  }
+
+  // 4. Rolled right-side down +20 deg -> (+sin(10 deg), 0, 0, cos(10 deg))
+  {
+    double p = deg2rad(20.0);
+    double cp = std::cos(p), sp = std::sin(p);
+    TelemVect3 mOri[3];
+    mOri[0].Set(-cp, sp, 0.0);
+    mOri[1].Set(sp, cp, 0.0);
+    mOri[2].Set(0.0, 0.0, -1.0);
+    TelemVect3 mCamOri[3];
+    mCamOri[0].Set(cp, -sp, 0.0);
+    mCamOri[1].Set(sp, cp, 0.0);
+    mCamOri[2].Set(0.0, 0.0, 1.0);
+
+    double expectedX = std::sin(deg2rad(10.0));
+    double expectedW = std::cos(deg2rad(10.0));
+    double vqx, vqy, vqz, vqw;
+    double cqx, cqy, cqz, cqw;
+    VehicleOriToNedQuaternion(mOri, vqx, vqy, vqz, vqw);
+    CameraOriToNedQuaternion(mCamOri, cqx, cqy, cqz, cqw);
+
+    require(IsClose(vqx, expectedX) && IsClose(vqy, 0.0) && IsClose(vqz, 0.0) && IsClose(vqw, expectedW), "Vehicle Roll");
+    require(IsClose(cqx, expectedX) && IsClose(cqy, 0.0) && IsClose(cqz, 0.0) && IsClose(cqw, expectedW), "Camera Roll");
+  }
+
+  // 5. Hemisphere continuity across 180 deg South
+  {
+    double y1 = deg2rad(175.0);
+    double q1x = 0.0, q1y = 0.0, q1z = std::sin(y1 / 2.0), q1w = std::cos(y1 / 2.0);
+    double y2 = deg2rad(-175.0);
+    double q2x = 0.0, q2y = 0.0, q2z = std::sin(y2 / 2.0), q2w = std::cos(y2 / 2.0);
+    AlignQuaternionHemisphere(q2x, q2y, q2z, q2w, q1x, q1y, q1z, q1w);
+    double dot = q1x * q2x + q1y * q2y + q1z * q2z + q1w * q2w;
+    require(dot > 0.0, "Hemisphere dot > 0");
+    require(IsClose(q2z, std::sin(deg2rad(185.0) / 2.0)), "Hemisphere qz");
+    require(IsClose(q2w, std::cos(deg2rad(185.0) / 2.0)), "Hemisphere qw");
+  }
+
+  std::cout << "TestVehicleAndCameraNedFrdQuaternions passed!" << std::endl;
+}
+
 void TestParseServerAddress() {
   {
     ServerAddressInfo info = ParseServerAddress("http://localhost");
@@ -1218,23 +1333,25 @@ void TestCameraTelemetryEndToEnd() {
 
     // Sample 1: valid cockpit camera
     TEST_REQUIRE(decoder.Step(rec, err) == Brt1StreamDecoder::StepResult::BaselineReceived);
-    TEST_REQUIRE(IsClose(rec["Cam Pos X"], 12.5, 1e-3));
-    TEST_REQUIRE(IsClose(rec["Cam Pos Y"], 0.85, 1e-3));
-    TEST_REQUIRE(IsClose(rec["Cam Pos Z"], -34.2, 1e-3));
-    TEST_REQUIRE(IsClose(std::abs(rec["Cam Quat Y"]), 0.70710678, 1e-3));
-    TEST_REQUIRE(IsClose(std::abs(rec["Cam Quat W"]), 0.70710678, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Local Cam Pos X"], 12.5, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Local Cam Pos Y"], 0.85, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Local Cam Pos Z"], -34.2, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Local Cam Quat X"], 0.0, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Local Cam Quat Y"], 0.0, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Local Cam Quat Z"], -0.70710678, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Local Cam Quat W"], 0.70710678, 1e-3));
 
     // Sample 2: trackside camera -> NaN
     TEST_REQUIRE(decoder.Step(rec, err) == Brt1StreamDecoder::StepResult::SampleDecoded);
-    TEST_REQUIRE(std::isnan(rec["Cam Pos X"]));
-    TEST_REQUIRE(std::isnan(rec["Cam Quat W"]));
+    TEST_REQUIRE(std::isnan(rec["Local Cam Pos X"]));
+    TEST_REQUIRE(std::isnan(rec["Local Cam Quat W"]));
 
     // Sample 3: TV cockpit -> Baseline keyframe with recovered camera values
     TEST_REQUIRE(decoder.Step(rec, err) == Brt1StreamDecoder::StepResult::BaselineReceived);
-    TEST_REQUIRE(IsClose(rec["Cam Pos X"], 13.0, 1e-3));
-    TEST_REQUIRE(IsClose(rec["Cam Pos Y"], 0.90, 1e-3));
-    TEST_REQUIRE(IsClose(rec["Cam Pos Z"], -35.0, 1e-3));
-    TEST_REQUIRE(!std::isnan(rec["Cam Quat W"]));
+    TEST_REQUIRE(IsClose(rec["Local Cam Pos X"], 13.0, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Local Cam Pos Y"], 0.90, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Local Cam Pos Z"], -35.0, 1e-3));
+    TEST_REQUIRE(!std::isnan(rec["Local Cam Quat W"]));
 
     TEST_REQUIRE(decoder.Step(rec, err) == Brt1StreamDecoder::StepResult::EndOfStream);
   }
@@ -1262,6 +1379,7 @@ int main() {
     TestRotation90X();
     TestRotation90Y();
     TestRotation90Z();
+    TestVehicleAndCameraNedFrdQuaternions();
 
     std::cout << "Running unit tests for ParseServerAddress..." << std::endl;
     TestParseServerAddress();

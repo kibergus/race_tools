@@ -461,7 +461,7 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker(SafeQueue<QueuedTelemetryItem>::R
   const std::string csvColumnHeadersBase =
       "Time,x,z,Speed,GForceLat,GForceLon,GForceVert,Throttle,Brake,Steering Angle,Clutch,Gear,"
       "Toe FL,Toe FR,Toe RL,Toe RR,"
-      "Ori Quat X,Ori Quat Y,Ori Quat Z,Ori Quat W,"
+      "Local Ori Quat X,Local Ori Quat Y,Local Ori Quat Z,Local Ori Quat W,"
       "RPS FL,RPS FR,RPS RL,RPS RR,"
       "Lat Patch Vel FL,Lat Patch Vel FR,Lat Patch Vel RL,Lat Patch Vel RR,"
       "Long Patch Vel FL,Long Patch Vel FR,Long Patch Vel RL,Long Patch Vel RR,"
@@ -650,7 +650,7 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker(SafeQueue<QueuedTelemetryItem>::R
       // Write CSV Column Headers
       std::string csvColumnHeaders = csvColumnHeadersBase;
       if (collectCam) {
-        csvColumnHeaders += ",Cam Pos X,Cam Pos Y,Cam Pos Z,Cam Quat X,Cam Quat Y,Cam Quat Z,Cam Quat W";
+        csvColumnHeaders += ",Local Cam Pos X,Local Cam Pos Y,Local Cam Pos Z,Local Cam Quat X,Local Cam Quat Y,Local Cam Quat Z,Local Cam Quat W";
       }
       csvColumnHeaders += "\n";
       session->csvQueue.Push(Sink::Line{csvColumnHeaders, /*isHeader=*/true});
@@ -672,7 +672,7 @@ void BrBrDbTelemetryPlugin::LoggerThreadWorker(SafeQueue<QueuedTelemetryItem>::R
     std::vector<double> values;
     std::string line;
     ExtractTelemetryData(info, session->sessionStartTime, session->startElapsedTime, flag,
-                         config_.collectCameraOrientation, &queuedItem.camera, values, line);
+                         config_.collectCameraOrientation, &queuedItem.camera, session.get(), values, line);
     session->csvQueue.Push(Sink::Line{line, /*isHeader=*/false, std::move(values)});
   }
 
@@ -692,6 +692,7 @@ void BrBrDbTelemetryPlugin::ExtractTelemetryData(
     unsigned char flag,
     bool includeCamera,
     const CameraPoseSnapshot* camera,
+    ParticipantSession* session,
     std::vector<double>& outValues,
     std::string& outCsvLine) {
   // 1. Time (ISO-8601 UTC and seconds since Unix epoch)
@@ -739,9 +740,21 @@ void BrBrDbTelemetryPlugin::ExtractTelemetryData(
   }
   double steering = info.mFilteredSteering * (steerRange / 2.0);
 
-  // 6. Orientation Quaternion
+  // 6. Orientation Quaternion (Game NED + FRD)
   double qx = 0.0, qy = 0.0, qz = 0.0, qw = 1.0;
-  race_tools::MatrixToQuaternion(info.mOri, qx, qy, qz, qw);
+  race_tools::VehicleOriToNedQuaternion(info.mOri, qx, qy, qz, qw);
+  if (session != nullptr) {
+    if (session->hasPrevOriQuat) {
+      race_tools::AlignQuaternionHemisphere(qx, qy, qz, qw,
+                                            session->prevOriQuat[0], session->prevOriQuat[1],
+                                            session->prevOriQuat[2], session->prevOriQuat[3]);
+    }
+    session->prevOriQuat[0] = qx;
+    session->prevOriQuat[1] = qy;
+    session->prevOriQuat[2] = qz;
+    session->prevOriQuat[3] = qw;
+    session->hasPrevOriQuat = true;
+  }
 
   const double two_pi = 2.0 * 3.14159265358979323846;
   double rpsFL = info.mWheel[0].mRotation / two_pi;
@@ -887,7 +900,19 @@ void BrBrDbTelemetryPlugin::ExtractTelemetryData(
                     (camera->cameraType >= 0 && camera->cameraType <= 2);
     if (camValid) {
       double cqx = 0.0, cqy = 0.0, cqz = 0.0, cqw = 1.0;
-      race_tools::MatrixToQuaternion(camera->camOri, cqx, cqy, cqz, cqw);
+      race_tools::CameraOriToNedQuaternion(camera->camOri, cqx, cqy, cqz, cqw);
+      if (session != nullptr) {
+        if (session->hasPrevCamQuat) {
+          race_tools::AlignQuaternionHemisphere(cqx, cqy, cqz, cqw,
+                                                session->prevCamQuat[0], session->prevCamQuat[1],
+                                                session->prevCamQuat[2], session->prevCamQuat[3]);
+        }
+        session->prevCamQuat[0] = cqx;
+        session->prevCamQuat[1] = cqy;
+        session->prevCamQuat[2] = cqz;
+        session->prevCamQuat[3] = cqw;
+        session->hasPrevCamQuat = true;
+      }
       outValues.push_back(camera->camPos.x);
       outValues.push_back(camera->camPos.y);
       outValues.push_back(camera->camPos.z);
@@ -899,6 +924,9 @@ void BrBrDbTelemetryPlugin::ExtractTelemetryData(
       ss << "," << camera->camPos.x << "," << camera->camPos.y << "," << camera->camPos.z
          << "," << cqx << "," << cqy << "," << cqz << "," << cqw;
     } else {
+      if (session != nullptr) {
+        session->hasPrevCamQuat = false;
+      }
       const double nanVal = std::numeric_limits<double>::quiet_NaN();
       for (int i = 0; i < 7; ++i) {
         outValues.push_back(nanVal);
@@ -919,7 +947,7 @@ std::string BrBrDbTelemetryPlugin::FormatTelemetryLine(
   std::vector<double> values;
   std::string csvLine;
   ExtractTelemetryData(info, sessionStartRealTime, startElapsedTime, flag,
-                       config_.collectCameraOrientation, nullptr, values, csvLine);
+                       config_.collectCameraOrientation, nullptr, nullptr, values, csvLine);
   return csvLine;
 }
 

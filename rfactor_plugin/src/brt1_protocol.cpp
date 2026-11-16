@@ -40,10 +40,10 @@ const std::vector<Brt1Channel>& GetDefaultBrt1Channels() {
     {"Toe FR", 0.0001},
     {"Toe RL", 0.0001},
     {"Toe RR", 0.0001},
-    {"Ori Quat X", 0.0001},
-    {"Ori Quat Y", 0.0001},
-    {"Ori Quat Z", 0.0001},
-    {"Ori Quat W", 0.0001},
+    {"Local Ori Quat X", 0.0001},
+    {"Local Ori Quat Y", 0.0001},
+    {"Local Ori Quat Z", 0.0001},
+    {"Local Ori Quat W", 0.0001},
     {"RPS FL", 0.01},
     {"RPS FR", 0.01},
     {"RPS RL", 0.01},
@@ -95,13 +95,13 @@ const std::vector<Brt1Channel>& GetBrt1Channels(bool includeCamera) {
   }
   static const std::vector<Brt1Channel> cameraChannels = []() {
     std::vector<Brt1Channel> ch = GetDefaultBrt1Channels();
-    ch.push_back({"Cam Pos X", 0.001});
-    ch.push_back({"Cam Pos Y", 0.001});
-    ch.push_back({"Cam Pos Z", 0.001});
-    ch.push_back({"Cam Quat X", 0.0001});
-    ch.push_back({"Cam Quat Y", 0.0001});
-    ch.push_back({"Cam Quat Z", 0.0001});
-    ch.push_back({"Cam Quat W", 0.0001});
+    ch.push_back({"Local Cam Pos X", 0.001});
+    ch.push_back({"Local Cam Pos Y", 0.001});
+    ch.push_back({"Local Cam Pos Z", 0.001});
+    ch.push_back({"Local Cam Quat X", 0.0001});
+    ch.push_back({"Local Cam Quat Y", 0.0001});
+    ch.push_back({"Local Cam Quat Z", 0.0001});
+    ch.push_back({"Local Cam Quat W", 0.0001});
     return ch;
   }();
   return cameraChannels;

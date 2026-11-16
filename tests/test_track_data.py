@@ -1,4 +1,7 @@
+import math
 import pytest
+from race_tools import assetto_corsa
+from race_tools import rfactor
 from race_tools import track_data
 
 
@@ -74,3 +77,28 @@ def test_find_track_origin():
     expected_err = r"Unknown track: 'Monza'\. Please add its coordinates to TRACK_ORIGINS in test\.py"
     with pytest.raises(ValueError, match=expected_err):
         track_data.find_track_origin('Monza', origins, 'test.py')
+
+
+def _finite_diff_bearing(origin: track_data.TrackOrigin, dx: float, dz: float) -> float:
+    lat0, lon0 = origin.to_gps(0.0, 0.0)
+    lat1, lon1 = origin.to_gps(dx, dz)
+    m_lat, m_lon = track_data.wgs84_meters_per_degree(origin.lat)
+    return math.degrees(math.atan2((lon1 - lon0) * m_lon, (lat1 - lat0) * m_lat)) % 360.0
+
+
+def test_local_ned_quat_to_geodetic_ned_rfactor_and_ac():
+    q_north = (0.0, 0.0, 0.0, 1.0)
+    # rFactor: Game North is (0, +10)
+    rf_origin = rfactor.TRACK_ORIGINS['Buckmore Park']
+    geo_rf = track_data.local_ned_quat_to_geodetic_ned(q_north, rf_origin)
+    assert track_data.ned_quat_to_heading_deg(geo_rf) == pytest.approx(
+        _finite_diff_bearing(rf_origin, 0.0, 10.0), abs=1e-4
+    )
+
+    # Assetto Corsa: Game North is (0, -10)
+    for track_name in ('Imola', 'Suzuka'):
+        ac_origin = assetto_corsa.get_track_origin(track_name)
+        geo_ac = track_data.local_ned_quat_to_geodetic_ned(q_north, ac_origin)
+        assert track_data.ned_quat_to_heading_deg(geo_ac) == pytest.approx(
+            _finite_diff_bearing(ac_origin, 0.0, -10.0), abs=1e-4
+        )

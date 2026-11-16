@@ -122,6 +122,40 @@ std::string ExtractNumber(const std::string& str) {
   return !currentNum.empty() ? currentNum : lastNum;
 }
 
+void CanonicalizeQuaternion(double& qx, double& qy, double& qz, double& qw) {
+  double norm = std::sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+  if (norm > 0.0) {
+    qx /= norm;
+    qy /= norm;
+    qz /= norm;
+    qw /= norm;
+  } else {
+    qx = 0.0;
+    qy = 0.0;
+    qz = 0.0;
+    qw = 1.0;
+    return;
+  }
+
+  constexpr double kEps = 1e-12;
+  bool negate = false;
+  if (std::abs(qw) > kEps) {
+    negate = (qw < 0.0);
+  } else if (std::abs(qz) > kEps) {
+    negate = (qz < 0.0);
+  } else if (std::abs(qy) > kEps) {
+    negate = (qy < 0.0);
+  } else if (std::abs(qx) > kEps) {
+    negate = (qx < 0.0);
+  }
+  if (negate) {
+    qx = -qx;
+    qy = -qy;
+    qz = -qz;
+    qw = -qw;
+  }
+}
+
 void EulerToQuaternion(double heading, double pitch, double roll,
                        double& qx, double& qy, double& qz, double& qw) {
   double cy = std::cos(heading * 0.5);
@@ -135,6 +169,7 @@ void EulerToQuaternion(double heading, double pitch, double roll,
   qx = sr * cp * cy - cr * sp * sy;
   qy = cr * sp * cy + sr * cp * sy;
   qz = cr * cp * sy - sr * sp * cy;
+  CanonicalizeQuaternion(qx, qy, qz, qw);
 }
 
 std::string SessionTypeToString(int sessionType) {
@@ -221,7 +256,9 @@ void TelemetryCollector::ExtractTelemetryData(
     std::chrono::steady_clock::time_point sessionStartSteadyTime,
     std::chrono::steady_clock::time_point nowSteadyTime,
     std::vector<double>& outValues,
-    std::string& outCsvLine) {
+    std::string& outCsvLine,
+    bool* hasPrevOriQuat,
+    double prevOriQuat[4]) {
 
   // 1. Time (ISO-8601 UTC)
   double elapsedSec = std::chrono::duration<double>(nowSteadyTime - sessionStartSteadyTime).count();
@@ -293,9 +330,26 @@ void TelemetryCollector::ExtractTelemetryData(
     steering = physics.steerAngle * (180.0 / PI);
   }
 
-  // 7. Orientation Quaternion
+  // 7. Orientation Quaternion (Game NED + FRD)
+  double nedYaw = std::remainder(static_cast<double>(physics.heading) + PI, TWO_PI);
   double qx = 0.0, qy = 0.0, qz = 0.0, qw = 1.0;
-  EulerToQuaternion(physics.heading, physics.pitch, physics.roll, qx, qy, qz, qw);
+  EulerToQuaternion(nedYaw, physics.pitch, physics.roll, qx, qy, qz, qw);
+  if (hasPrevOriQuat != nullptr && prevOriQuat != nullptr) {
+    if (*hasPrevOriQuat) {
+      double dot = qx * prevOriQuat[0] + qy * prevOriQuat[1] + qz * prevOriQuat[2] + qw * prevOriQuat[3];
+      if (dot < 0.0) {
+        qx = -qx;
+        qy = -qy;
+        qz = -qz;
+        qw = -qw;
+      }
+    }
+    prevOriQuat[0] = qx;
+    prevOriQuat[1] = qy;
+    prevOriQuat[2] = qz;
+    prevOriQuat[3] = qw;
+    *hasPrevOriQuat = true;
+  }
 
   double rpsFL = physics.wheelAngularSpeed[0] / TWO_PI;
   double rpsFR = physics.wheelAngularSpeed[1] / TWO_PI;
@@ -396,6 +450,11 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
                                       const UnifiedGraphicInfo& graphics,
                                       const UnifiedStaticInfo& statics) {
   EndSession();
+  hasPrevOriQuat_ = false;
+  prevOriQuat_[0] = 0.0;
+  prevOriQuat_[1] = 0.0;
+  prevOriQuat_[2] = 0.0;
+  prevOriQuat_[3] = 1.0;
 
   std::string trackName = Trim(statics.track);
   std::string carName = Trim(graphics.carModel);
@@ -586,6 +645,11 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
 }
 
 void TelemetryCollector::EndSession() {
+  hasPrevOriQuat_ = false;
+  prevOriQuat_[0] = 0.0;
+  prevOriQuat_[1] = 0.0;
+  prevOriQuat_[2] = 0.0;
+  prevOriQuat_[3] = 1.0;
   if (!inSession_.exchange(false, std::memory_order_acq_rel)) {
     sessionState_ = SessionState::Idle;
     return;
@@ -761,7 +825,8 @@ void TelemetryCollector::PollingThreadWorker() {
           std::vector<double> values;
           std::string line;
           ExtractTelemetryData(physics, graphics, sessionStartTime_,
-                               sessionStartSteadyTime_, nowSteady, values, line);
+                               sessionStartSteadyTime_, nowSteady, values, line,
+                               &hasPrevOriQuat_, prevOriQuat_);
           sessionQueue_->Push(Sink::Line{std::move(line), /*is_header=*/false, std::move(values)});
         }
       } else if (graphics.status == 3 /* AC_PAUSE */) {

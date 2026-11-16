@@ -19,7 +19,20 @@
 
 namespace race_tools {
 
+// Converts a 3x3 rotation matrix to a normalized, canonically signed quaternion.
+void Matrix3x3ToQuaternion(const double r[3][3], double& qx, double& qy, double& qz, double& qw);
+
 // Converts a 3x3 orientation matrix to a quaternion
 void MatrixToQuaternion(const TelemVect3 ori[3], double& qx, double& qy, double& qz, double& qw);
+
+// Enforces hemisphere continuity against the previous finite quaternion sample.
+void AlignQuaternionHemisphere(double& qx, double& qy, double& qz, double& qw,
+                               double prevQx, double prevQy, double prevQz, double prevQw);
+
+// Converts rFactor 2 TelemInfoV01::mOri (columns: Left, Up, Back) to Game NED + FRD quaternion.
+void VehicleOriToNedQuaternion(const TelemVect3 mOri[3], double& qx, double& qy, double& qz, double& qw);
+
+// Converts rFactor 2 GraphicsInfoV02::mCamOri (rows: Right, Up, Forward) to Game NED + FRD quaternion.
+void CameraOriToNedQuaternion(const TelemVect3 mCamOri[3], double& qx, double& qy, double& qz, double& qw);
 
 } // namespace race_tools
