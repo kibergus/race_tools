@@ -1315,3 +1315,113 @@ def test_calibration_solver_rejects_corrupted_edge_outliers_and_monocular_ipd_sh
         assert uv_hat is not None
         assert abs(uv_hat[0] - u_chk) < 0.01
         assert abs(uv_hat[1] - v_chk) < 0.01
+
+
+def test_fullscreen_calibration_opens_in_verify_and_populates_edid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify Calibrate Screen opens in live verify mode and auto-populates diagonal from EDID."""
+    tk = pytest.importorskip('tkinter')
+    import tobii.main as tobii_main
+    from tobii.main import TobiiStudioApp, _MonitorDescriptor
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip('No graphical display available for Tkinter')
+    root.withdraw()
+
+    fake_usb = _FakeTtpUsbTransport()
+    saved_profile = DisplayAreaProfile(
+        tl_xyz=(-450.0, 420.0, -700.0),
+        tr_xyz=(450.0, 420.0, -700.0),
+        bl_xyz=(-450.0, -86.0, -700.0),
+        screen_diagonal_in=32.0,
+        monitor_index=0,
+        screen_width_px=1920,
+        screen_height_px=1080,
+        rms_error_norm=0.012,
+        estimated_eye_to_screen_cm=130.0,
+        estimated_screen_z_cm=-70.0,
+        inlier_targets=9,
+        total_targets=9,
+        calibrated_at_iso='2026-11-16T00:00:00Z',
+    )
+
+    fake_monitors = [
+        _MonitorDescriptor(
+            index=0,
+            x=0,
+            y=0,
+            width=1920,
+            height=1080,
+            edid_diagonal_in=40.2,
+            is_primary=True,
+            name='SAMSUNG',
+        ),
+        _MonitorDescriptor(
+            index=1,
+            x=1920,
+            y=0,
+            width=1920,
+            height=1200,
+            edid_diagonal_in=16.0,
+            is_primary=False,
+            name='Internal Display',
+        ),
+    ]
+    monkeypatch.setattr(tobii_main, '_discover_monitors', lambda _root: list(fake_monitors))
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cal_path = os.path.join(tmp_dir, 'cal_profile.json')
+        save_calibration_profile(saved_profile, cal_path)
+
+        app = TobiiStudioApp(
+            root,
+            aux_port=0,
+            ir_fps=30.0,
+            calibration_path=cal_path,
+            auto_connect=True,
+            transport_factory=lambda: fake_usb,
+            extractor_factory=_StubFaceExtractor,
+        )
+        try:
+            # Wait briefly for handshake & saved calibration profile to be applied on hardware
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                root.update()
+                if abs(fake_usb.display_area[0][2] - saved_profile.tl_xyz[2]) < 1.0:
+                    break
+                time.sleep(0.01)
+            assert math.isclose(fake_usb.display_area[0][2], saved_profile.tl_xyz[2], abs_tol=1.0)
+
+            app._on_calibrate_clicked()
+            overlay = app._active_cal_overlay
+            assert overlay is not None
+            overlay._win.withdraw()
+            root.update()
+
+            # Opens directly in verify mode without replacing the active hardware display area
+            assert overlay._phase == 'verify'
+            assert math.isclose(fake_usb.display_area[0][2], saved_profile.tl_xyz[2], abs_tol=1.0)
+            assert overlay._diag_var.get() == '40.2'
+
+            # Switching monitors in the dropdown updates geometry and auto-populates EDID size
+            overlay._cb_monitor.current(1)
+            overlay._on_monitor_selected()
+            assert overlay._monitor.index == 1
+            assert overlay._diag_var.get() == '16.0'
+
+            # Starting recalibration applies WIDE_COLLECTION_PLANE and enters ready_wait
+            overlay._start_recalibration()
+            assert overlay._phase == 'ready_wait'
+            assert math.isclose(fake_usb.display_area[0][0], WIDE_COLLECTION_PLANE[0][0], abs_tol=1.0)
+
+            # Pressing Esc mid-recalibration aborts back to verify mode & restores active display area
+            overlay._on_escape()
+            assert overlay._phase == 'verify'
+            assert math.isclose(fake_usb.display_area[0][2], saved_profile.tl_xyz[2], abs_tol=1.0)
+
+            # Pressing Esc in verify mode closes the overlay cleanly
+            overlay._on_escape()
+            assert app._active_cal_overlay is None
+        finally:
+            app._on_close()

@@ -379,6 +379,18 @@ def _discover_monitors(root: tk.Tk) -> List[_MonitorDescriptor]:
     return out
 
 
+def _default_diagonal_str(
+    monitor: _MonitorDescriptor,
+    saved_profile: Optional[DisplayAreaProfile] = None,
+) -> str:
+    """Return EDID diagonal string when available, else saved monitor diagonal or `'32.0'`."""
+    if monitor.edid_diagonal_in is not None:
+        return f'{monitor.edid_diagonal_in:.1f}'
+    if saved_profile is not None and saved_profile.monitor_index == monitor.index:
+        return f'{saved_profile.screen_diagonal_in:.1f}'
+    return '32.0'
+
+
 class _FullscreenCalibrationWindow:
     """Borderless fullscreen 9-point 3D display-area calibration & live verification overlay."""
 
@@ -392,23 +404,41 @@ class _FullscreenCalibrationWindow:
         self,
         parent: tk.Tk,
         client: TobiiDirectClient,
-        monitor: _MonitorDescriptor,
-        diagonal_inches: float,
+        monitors: Sequence[_MonitorDescriptor],
+        initial_monitor_index: int,
         on_finished: Callable[[Optional[DisplayAreaProfile]], None],
     ) -> None:
         self._parent = parent
         self._client = client
-        self._monitor = monitor
-        self._diagonal_inches = float(diagonal_inches)
+        self._monitors = list(monitors)
+        if not self._monitors:
+            self._monitors = [
+                _MonitorDescriptor(
+                    index=0,
+                    x=0,
+                    y=0,
+                    width=max(200, int(parent.winfo_screenwidth())),
+                    height=max(200, int(parent.winfo_screenheight())),
+                    edid_diagonal_in=None,
+                    is_primary=True,
+                )
+            ]
+        clamped_idx = max(0, min(int(initial_monitor_index), len(self._monitors) - 1))
+        self._monitor = self._monitors[clamped_idx]
         self._on_finished = on_finished
 
         self._closed = False
         self._timer_id: Optional[str] = None
         self._targets = list(DEFAULT_CALIBRATION_TARGETS)
         self._observations: List[CalibrationObservation] = []
-        self._solved_profile: Optional[DisplayAreaProfile] = None
+        self._solved_profile: Optional[DisplayAreaProfile] = client.active_calibration_profile
+        self._just_calibrated = False
+        self._collection_plane_active = False
 
-        self._phase = 'ready_wait'
+        init_diag_str = _default_diagonal_str(self._monitor, self._solved_profile)
+        self._diagonal_inches = float(init_diag_str)
+
+        self._phase = 'verify'
         self._phase_start = time.monotonic()
         self._eyes_seen_since: Optional[float] = None
         self._target_idx = 0
@@ -416,13 +446,14 @@ class _FullscreenCalibrationWindow:
         self._prev_uv: Tuple[float, float] = self._targets[0]
         self._cur_uv: Tuple[float, float] = self._targets[0]
         self._status_hint = ''
+        self._last_verify_banner: Tuple[str, str] = ('', '')
 
         self._win = tk.Toplevel(parent)
         self._win.title('Tobii Eye Tracker 5 — Screen Calibration')
-        self._win.configure(bg='#0B0B12', cursor='none')
+        self._win.configure(bg='#0B0B12', cursor='')
         self._win.overrideredirect(True)
         self._win.geometry(
-            f'{monitor.width}x{monitor.height}+{monitor.x}+{monitor.y}'
+            f'{self._monitor.width}x{self._monitor.height}+{self._monitor.x}+{self._monitor.y}'
         )
         self._win.attributes('-topmost', True)
         self._win.lift()
@@ -431,6 +462,89 @@ class _FullscreenCalibrationWindow:
         self._canvas = tk.Canvas(self._win, bg='#0B0B12', highlightthickness=0)
         self._canvas.pack(fill=tk.BOTH, expand=True)
         self._canvas.bind('<Button-1>', self._on_canvas_click)
+
+        self._verify_bar = tk.Frame(self._win, bg=COLOR_PANEL, padx=14, pady=6)
+        self._lbl_verify_status = tk.Label(
+            self._verify_bar,
+            text='',
+            bg=COLOR_PANEL,
+            fg=COLOR_GREEN,
+            font=('Segoe UI', 10, 'bold'),
+        )
+        self._lbl_verify_status.pack(side=tk.LEFT, padx=(0, 12))
+
+        ctrl_right = tk.Frame(self._verify_bar, bg=COLOR_PANEL)
+        ctrl_right.pack(side=tk.RIGHT)
+
+        tk.Label(
+            ctrl_right,
+            text='Screen:',
+            bg=COLOR_PANEL,
+            fg=COLOR_MUTED,
+            font=('Segoe UI', 9, 'bold'),
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        mon_labels = [m.label for m in self._monitors]
+        self._mon_var = tk.StringVar(value=mon_labels[clamped_idx])
+        self._cb_monitor = ttk.Combobox(
+            ctrl_right,
+            textvariable=self._mon_var,
+            values=mon_labels,
+            width=38,
+            state='readonly',
+        )
+        self._cb_monitor.pack(side=tk.LEFT, padx=(0, 10))
+        self._cb_monitor.bind('<<ComboboxSelected>>', self._on_monitor_selected)
+
+        tk.Label(
+            ctrl_right,
+            text='Size (in):',
+            bg=COLOR_PANEL,
+            fg=COLOR_MUTED,
+            font=('Segoe UI', 9, 'bold'),
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        self._diag_var = tk.StringVar(value=init_diag_str)
+        self._ent_diag = tk.Entry(
+            ctrl_right,
+            textvariable=self._diag_var,
+            bg=COLOR_SURFACE,
+            fg=COLOR_TEXT,
+            insertbackground=COLOR_TEXT,
+            relief=tk.FLAT,
+            font=('Consolas', 10),
+            width=6,
+        )
+        self._ent_diag.pack(side=tk.LEFT, padx=(0, 12))
+        self._ent_diag.bind('<Button-1>', lambda _e: self._ent_diag.focus_force(), add='+')
+
+        self._btn_recalibrate = tk.Button(
+            ctrl_right,
+            text='↻ Recalibrate (R)',
+            bg=COLOR_ACCENT,
+            fg=COLOR_PANEL,
+            font=('Segoe UI', 9, 'bold'),
+            relief=tk.FLAT,
+            padx=10,
+            pady=2,
+            command=self._start_recalibration,
+        )
+        self._btn_recalibrate.pack(side=tk.LEFT, padx=(0, 8))
+
+        self._btn_done = tk.Button(
+            ctrl_right,
+            text='✓ Done (Esc)',
+            bg=COLOR_GREEN,
+            fg=COLOR_PANEL,
+            font=('Segoe UI', 9, 'bold'),
+            relief=tk.FLAT,
+            padx=10,
+            pady=2,
+            command=self._finish_verified,
+        )
+        self._btn_done.pack(side=tk.LEFT)
+
+        self._show_verify_bar()
 
         self._parent_binds: List[Tuple[str, str]] = []
         for seq, handler in (
@@ -445,16 +559,27 @@ class _FullscreenCalibrationWindow:
             if func_id:
                 self._parent_binds.append((seq, func_id))
         self._win.protocol('WM_DELETE_WINDOW', self._cancel)
-
-        try:
-            self._client.apply_temporary_display_area(WIDE_COLLECTION_PLANE)
-        except Exception as exc:
-            self._close_internal()
-            messagebox.showerror('Calibration Error', f'Failed to enter calibration mode:\n{exc}')
-            self._on_finished(None)
-            return
+        self._canvas.focus_set()
 
         self._schedule_next()
+
+    def _show_verify_bar(self) -> None:
+        self._verify_bar.place(x=0, y=0, relwidth=1.0)
+        self._verify_bar.lift()
+
+    def _hide_verify_bar(self) -> None:
+        self._verify_bar.place_forget()
+
+    def _on_monitor_selected(self, _event: Optional[tk.Event] = None) -> None:
+        sel = self._cb_monitor.current()
+        if 0 <= sel < len(self._monitors):
+            self._monitor = self._monitors[sel]
+            self._diag_var.set(_default_diagonal_str(self._monitor, self._solved_profile))
+            self._win.geometry(
+                f'{self._monitor.width}x{self._monitor.height}+{self._monitor.x}+{self._monitor.y}'
+            )
+            self._win.lift()
+            self._canvas.focus_set()
 
     def _schedule_next(self) -> None:
         if not self._closed:
@@ -464,31 +589,65 @@ class _FullscreenCalibrationWindow:
         if self._phase == 'verify':
             self._finish_verified()
         else:
-            self._cancel()
+            self._abort_recalibration_to_verify()
 
-    def _on_confirm_key(self, _event: Optional[tk.Event] = None) -> None:
+    def _on_confirm_key(self, event: Optional[tk.Event] = None) -> None:
+        if event is not None and event.widget in (self._ent_diag, self._cb_monitor):
+            if event.widget is self._ent_diag and getattr(event, 'keysym', '') == 'Return':
+                self._canvas.focus_set()
+            return
         if self._phase == 'verify':
             self._finish_verified()
 
-    def _on_canvas_click(self, event: tk.Event) -> None:
-        w = max(200, self._canvas.winfo_width())
-        if event.y <= 56 and event.x >= w - 160:
-            if self._phase == 'verify':
-                self._finish_verified()
-            else:
-                self._cancel()
-        elif self._phase == 'verify' and event.y <= 56 and (w - 320) <= event.x < (w - 165):
-            self._on_restart_key()
+    def _on_canvas_click(self, _event: tk.Event) -> None:
+        self._canvas.focus_set()
+        self._win.focus_force()
 
-    def _on_restart_key(self, _event: Optional[tk.Event] = None) -> None:
-        if self._phase != 'verify':
+    def _on_restart_key(self, event: Optional[tk.Event] = None) -> None:
+        if event is not None and event.widget in (self._ent_diag, self._cb_monitor):
+            return
+        if self._phase == 'verify':
+            self._start_recalibration()
+
+    def _start_recalibration(self) -> None:
+        if self._closed or self._phase != 'verify':
+            return
+        sel = self._cb_monitor.current()
+        if 0 <= sel < len(self._monitors) and self._monitors[sel] is not self._monitor:
+            self._monitor = self._monitors[sel]
+            self._win.geometry(
+                f'{self._monitor.width}x{self._monitor.height}+{self._monitor.x}+{self._monitor.y}'
+            )
+        try:
+            diag_val = float(self._diag_var.get().strip())
+            if not (8.0 <= diag_val <= 150.0):
+                raise ValueError('out of range')
+        except ValueError:
+            messagebox.showerror(
+                'Invalid Screen Size',
+                'Please enter your TV / monitor diagonal in inches (between 8 and 150).',
+                parent=self._win,
+            )
+            self._ent_diag.focus_force()
             return
         try:
             self._client.apply_temporary_display_area(WIDE_COLLECTION_PLANE)
-        except Exception:
+        except Exception as exc:
+            messagebox.showerror(
+                'Calibration Error',
+                f'Failed to enter calibration mode:\n{exc}',
+                parent=self._win,
+            )
             return
+
+        self._diagonal_inches = diag_val
+        self._collection_plane_active = True
+        self._hide_verify_bar()
+        self._win.configure(cursor='none')
+        self._canvas.focus_set()
+        self._win.focus_force()
+
         self._observations.clear()
-        self._solved_profile = None
         self._target_idx = 0
         self._dot_retries = 0
         self._prev_uv = self._targets[0]
@@ -498,14 +657,33 @@ class _FullscreenCalibrationWindow:
         self._phase = 'ready_wait'
         self._phase_start = time.monotonic()
 
+    def _abort_recalibration_to_verify(self) -> None:
+        if self._closed:
+            return
+        if self._collection_plane_active:
+            try:
+                self._client.restore_active_or_original_display_area()
+            except Exception:
+                pass
+            self._collection_plane_active = False
+        self._observations.clear()
+        self._status_hint = ''
+        self._phase = 'verify'
+        self._win.configure(cursor='')
+        self._show_verify_bar()
+        self._canvas.focus_set()
+
     def _cancel(self) -> None:
         if self._closed:
             return
+        was_collecting = self._collection_plane_active
+        self._collection_plane_active = False
         self._close_internal()
-        try:
-            self._client.restore_active_or_original_display_area()
-        except Exception:
-            pass
+        if was_collecting:
+            try:
+                self._client.restore_active_or_original_display_area()
+            except Exception:
+                pass
         self._on_finished(None)
 
     def _finish_verified(self) -> None:
@@ -640,22 +818,31 @@ class _FullscreenCalibrationWindow:
                 monitor_index=self._monitor.index,
             )
             self._client.save_and_apply_calibration(profile)
+            self._collection_plane_active = False
             self._solved_profile = profile
+            self._just_calibrated = True
             self._phase = 'verify'
             self._phase_start = time.monotonic()
             self._win.configure(cursor='')
+            self._show_verify_bar()
         except Exception as exc:
-            self._close_internal()
-            try:
-                self._client.restore_active_or_original_display_area()
-            except Exception:
-                pass
+            if self._collection_plane_active:
+                try:
+                    self._client.restore_active_or_original_display_area()
+                except Exception:
+                    pass
+                self._collection_plane_active = False
+            self._observations.clear()
+            self._status_hint = ''
+            self._phase = 'verify'
+            self._win.configure(cursor='')
+            self._show_verify_bar()
             messagebox.showerror(
                 'Calibration Failed',
                 f'Could not compute 3D screen calibration:\n{exc}\n\n'
                 'Ensure the tracker has a clear view of your eyes and try again.',
+                parent=self._win,
             )
-            self._on_finished(None)
 
     def _draw_collection_screen(
         self,
@@ -730,41 +917,45 @@ class _FullscreenCalibrationWindow:
         c.delete('all')
 
         prof = self._solved_profile
-        rms_pct = (prof.rms_error_norm * 100.0) if prof is not None else 0.0
-        dist_cm = prof.estimated_eye_to_screen_cm if prof is not None else 0.0
-        pts_txt = (
-            f'{prof.inlier_targets}/{len(self._targets)}'
-            if prof is not None and prof.inlier_targets > 0
-            else f'{len(self._observations)}/{len(self._targets)}'
-        )
-        eye_y = prof.mean_eye_xyz[1] if prof is not None else 100.0
+        if prof is not None:
+            rms_pct = prof.rms_error_norm * 100.0
+            dist_cm = prof.estimated_eye_to_screen_cm
+            pts_txt = (
+                f'{prof.inlier_targets}/{len(self._targets)}'
+                if prof.inlier_targets > 0
+                else f'{len(self._observations)}/{len(self._targets)}'
+            )
+            prefix = '✓ Calibration Saved!' if self._just_calibrated else '● Active Calibration'
+            status_txt = (
+                f'{prefix} ({prof.screen_diagonal_in:.1f}")  |  Targets: {pts_txt}  |  '
+                f'RMS: {rms_pct:.2f}%  |  Dist: ~{dist_cm:.0f} cm'
+            )
+            status_col = COLOR_GREEN if rms_pct < 3.5 else COLOR_YELLOW
+        else:
+            status_txt = '○ Uncalibrated (Device Default)  |  Check live gaze below or click Recalibrate'
+            status_col = COLOR_YELLOW
 
+        if self._last_verify_banner != (status_txt, status_col):
+            self._lbl_verify_status.configure(text=status_txt, fg=status_col)
+            self._last_verify_banner = (status_txt, status_col)
+
+        y_hint = max(115.0, h * 0.22)
         c.create_text(
             w * 0.5,
-            30,
+            y_hint,
             text=(
-                f'✓ Calibration Saved & Programmed!   |   Targets: {pts_txt}   |   '
-                f'RMS Fit Error: {rms_pct:.2f}%   |   Est. Eye-to-Screen: {dist_cm:.0f} cm'
-            ),
-            fill=COLOR_GREEN if rms_pct < 3.5 else COLOR_YELLOW,
-            font=('Segoe UI', 12, 'bold'),
-        )
-        c.create_text(
-            w * 0.5,
-            56,
-            text=(
-                'Look at any ring below to verify live hardware gaze   •   '
-                'Press Space / Enter / Esc to finish   •   Press R to recalibrate'
+                'Look at any ring to verify live hardware gaze   •   '
+                'Space / Enter / Esc: Done   •   R: Recalibrate'
             ),
             fill=COLOR_TEXT,
             font=('Segoe UI', 10),
         )
-        if eye_y < 20.0:
+        if prof is not None and prof.mean_eye_xyz[1] < 20.0:
             c.create_text(
                 w * 0.5,
-                80,
+                y_hint + 24.0,
                 text=(
-                    f'⚠ Trackbox Note: Eye Y is {eye_y:+.0f} mm (low in sensor FOV). '
+                    f'⚠ Trackbox Note: Eye Y is {prof.mean_eye_xyz[1]:+.0f} mm (low in sensor FOV). '
                     'Tilting the bar ~10-15° LESS upward centers your eyes (+80..+180 mm) '
                     'for cleaner bottom/edge lock.'
                 ),
@@ -777,14 +968,6 @@ class _FullscreenCalibrationWindow:
             ty = tv * h
             c.create_oval(tx - 18, ty - 18, tx + 18, ty + 18, outline=COLOR_SURFACE, width=2)
             c.create_oval(tx - 3.5, ty - 3.5, tx + 3.5, ty + 3.5, fill=COLOR_ACCENT, outline='')
-
-        # Clickable top-right controls in addition to keyboard shortcuts
-        c.create_rectangle(w - 310, 14, w - 170, 48, fill=COLOR_SURFACE, outline=COLOR_MUTED)
-        c.create_text(w - 240, 31, text='↻ Recalibrate (R)', fill=COLOR_TEXT, font=('Segoe UI', 9))
-        c.create_rectangle(w - 155, 14, w - 18, 48, fill=COLOR_GREEN, outline='')
-        c.create_text(
-            w - 86, 31, text='✓ Done (Esc)', fill=COLOR_PANEL, font=('Segoe UI', 9, 'bold')
-        )
 
         if latest_gaze is not None:
             gx_norm = math.nan
@@ -1224,181 +1407,17 @@ class TobiiStudioApp:
             if not self._client.is_running:
                 return
 
-        self._open_calibration_setup_dialog()
-
-    def _open_calibration_setup_dialog(self) -> None:
         monitors = _discover_monitors(self.root)
         saved_prof = self._client.active_calibration_profile
-
-        dlg = tk.Toplevel(self.root)
-        dlg.title('Calibrate Screen & Sim-Rig Geometry')
-        dlg.configure(bg=COLOR_PANEL, padx=20, pady=16)
-        dlg.resizable(False, False)
-        dlg.transient(self.root)
-        dlg.grab_set()
-
-        tk.Label(
-            dlg,
-            text='In-App 3D Screen & Personal Gaze Calibration',
-            bg=COLOR_PANEL,
-            fg=COLOR_GREEN,
-            font=('Segoe UI', 11, 'bold'),
-        ).pack(anchor=tk.W, pady=(0, 8))
-
-        tk.Label(
-            dlg,
-            text=(
-                "Solves your screen's exact 3D position, distance, and upward tracker tilt\n"
-                '(including above-wheel sim-rig mounts with distant TVs) plus personal eye\n'
-                'offset, programming the 3D display plane directly into the EyeChip hardware.'
-            ),
-            bg=COLOR_PANEL,
-            fg=COLOR_MUTED,
-            justify=tk.LEFT,
-            font=('Segoe UI', 9),
-        ).pack(anchor=tk.W, pady=(0, 14))
-
-        # Monitor selector
-        mon_row = tk.Frame(dlg, bg=COLOR_PANEL)
-        mon_row.pack(fill=tk.X, pady=(0, 10))
-        tk.Label(
-            mon_row,
-            text='Target Monitor / TV:',
-            bg=COLOR_PANEL,
-            fg=COLOR_TEXT,
-            font=('Segoe UI', 9, 'bold'),
-            width=22,
-            anchor=tk.W,
-        ).pack(side=tk.LEFT)
-
         init_mon_idx = 0
         if saved_prof is not None and 0 <= saved_prof.monitor_index < len(monitors):
             init_mon_idx = saved_prof.monitor_index
-        mon_labels = [m.label for m in monitors]
-        mon_var = tk.StringVar(value=mon_labels[init_mon_idx])
-        cb_mon = ttk.Combobox(
-            mon_row,
-            textvariable=mon_var,
-            values=mon_labels,
-            width=54,
-            state='readonly',
-        )
-        cb_mon.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        # Diagonal inches entry
-        diag_row = tk.Frame(dlg, bg=COLOR_PANEL)
-        diag_row.pack(fill=tk.X, pady=(0, 6))
-        tk.Label(
-            diag_row,
-            text='Screen Diagonal (inches):',
-            bg=COLOR_PANEL,
-            fg=COLOR_TEXT,
-            font=('Segoe UI', 9, 'bold'),
-            width=22,
-            anchor=tk.W,
-        ).pack(side=tk.LEFT)
-
-        if saved_prof is not None:
-            init_diag = f'{saved_prof.screen_diagonal_in:.1f}'
-        elif monitors[init_mon_idx].edid_diagonal_in is not None:
-            init_diag = f'{monitors[init_mon_idx].edid_diagonal_in:.1f}'
-        else:
-            init_diag = '32.0'
-
-        diag_var = tk.StringVar(value=init_diag)
-        ent_diag = tk.Entry(
-            diag_row,
-            textvariable=diag_var,
-            bg=COLOR_SURFACE,
-            fg=COLOR_TEXT,
-            insertbackground=COLOR_TEXT,
-            relief=tk.FLAT,
-            font=('Consolas', 10),
-            width=12,
-        )
-        ent_diag.pack(side=tk.LEFT)
-        tk.Label(
-            diag_row,
-            text='  e.g. 27, 32, 48, 55, 65',
-            bg=COLOR_PANEL,
-            fg=COLOR_MUTED,
-            font=('Segoe UI', 9),
-        ).pack(side=tk.LEFT)
-
-        def _on_mon_changed(_ev: Optional[tk.Event] = None) -> None:
-            if saved_prof is not None:
-                return
-            sel = cb_mon.current()
-            if 0 <= sel < len(monitors) and monitors[sel].edid_diagonal_in is not None:
-                diag_var.set(f'{monitors[sel].edid_diagonal_in:.1f}')
-
-        cb_mon.bind('<<ComboboxSelected>>', _on_mon_changed)
-
-        tk.Label(
-            dlg,
-            text=(
-                '• Sit in your normal driving posture.\n'
-                '• Follow each of the 9 dots smoothly with your eyes (~15 seconds).\n'
-                '• Press Esc at any time to cancel.'
-            ),
-            bg=COLOR_PANEL,
-            fg=COLOR_TEXT,
-            justify=tk.LEFT,
-            font=('Segoe UI', 9),
-        ).pack(anchor=tk.W, pady=(8, 16))
-
-        btn_row = tk.Frame(dlg, bg=COLOR_PANEL)
-        btn_row.pack(fill=tk.X)
-
-        def _start() -> None:
-            try:
-                diag_val = float(diag_var.get().strip())
-                if not (8.0 <= diag_val <= 150.0):
-                    raise ValueError('out of range')
-            except ValueError:
-                messagebox.showerror(
-                    'Invalid Screen Size',
-                    'Please enter your TV / monitor diagonal in inches (between 8 and 150).',
-                    parent=dlg,
-                )
-                return
-            sel_idx = max(0, cb_mon.current())
-            chosen_mon = monitors[min(sel_idx, len(monitors) - 1)]
-            dlg.destroy()
-            self._launch_fullscreen_calibration(chosen_mon, diag_val)
-
-        tk.Button(
-            btn_row,
-            text='Cancel',
-            bg=COLOR_SURFACE,
-            fg=COLOR_TEXT,
-            relief=tk.FLAT,
-            padx=14,
-            pady=4,
-            command=dlg.destroy,
-        ).pack(side=tk.RIGHT, padx=(8, 0))
-
-        tk.Button(
-            btn_row,
-            text='Start Fullscreen Calibration',
-            bg=COLOR_GREEN,
-            fg=COLOR_PANEL,
-            font=('Segoe UI', 9, 'bold'),
-            relief=tk.FLAT,
-            padx=16,
-            pady=4,
-            command=_start,
-        ).pack(side=tk.RIGHT)
-
-        dlg.bind('<Return>', lambda _e: _start())
-        dlg.bind('<Escape>', lambda _e: dlg.destroy())
-        ent_diag.focus_set()
-        ent_diag.selection_range(0, tk.END)
+        self._launch_fullscreen_calibration(monitors, init_mon_idx)
 
     def _launch_fullscreen_calibration(
         self,
-        monitor: _MonitorDescriptor,
-        diagonal_inches: float,
+        monitors: Sequence[_MonitorDescriptor],
+        initial_monitor_index: int,
     ) -> None:
         def _done(_prof: Optional[DisplayAreaProfile]) -> None:
             self._active_cal_overlay = None
@@ -1407,8 +1426,8 @@ class TobiiStudioApp:
         self._active_cal_overlay = _FullscreenCalibrationWindow(
             parent=self.root,
             client=self._client,
-            monitor=monitor,
-            diagonal_inches=diagonal_inches,
+            monitors=monitors,
+            initial_monitor_index=initial_monitor_index,
             on_finished=_done,
         )
 

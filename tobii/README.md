@@ -61,9 +61,9 @@ python -m tobii.main --help
  Tobii Studio includes built-in 3D screen calibration supporting both standard under-monitor setups and **off-screen sim-rig mounts** (for example, mounting the tracker above the steering wheel base `~55–75 cm` from your eyes, tilted upward, while your TV sits much further behind it):
 
 1. Connect the tracker in Tobii Studio and click **🎯 Calibrate Screen** in the top bar.
-2. Select your **Target Monitor / TV** and enter its **Screen Diagonal (inches)** (e.g. `27`, `32`, `48`, `55`, `65`).
-3. Sit in your normal driving posture and follow the **9 fullscreen targets** (`~15 seconds`).
-4. Tobii Studio solves the exact 3D `(Top-Left, Top-Right, Bottom-Left)` display plane in EyeChip coordinates, programs it directly into the hardware via TTP `SET_DISPLAY_AREA` (`0x05a0`), saves the profile locally to `tobii/calibration_profile.json` (auto-applied on future launches), and opens a live hardware gaze verification overlay (`Space` / `Enter` / `Esc` to finish, `R` to recalibrate).
+2. The fullscreen live hardware gaze verification overlay opens immediately so you can check how your current calibration tracks across all 9 target rings (`Space` / `Enter` / `Esc` to finish).
+3. If you want to recalibrate (or switch displays), use the top bar right next to **↻ Recalibrate (`R`)** to select your **Screen** — **Size (in)** auto-populates from the display's EDID (or enter your actual diagonal if your TV reports a generic EDID size) — and click **↻ Recalibrate (`R`)**.
+4. Sit in your normal driving posture and follow the **9 fullscreen targets** (`~15 seconds`). Tobii Studio solves the exact 3D `(Top-Left, Top-Right, Bottom-Left)` display plane in EyeChip coordinates, programs it directly into the hardware via TTP `SET_DISPLAY_AREA` (`0x05a0`), saves the profile locally to `tobii/calibration_profile.json` (auto-applied on future launches), and returns to the live verification overlay.
 
 ---
 
