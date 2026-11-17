@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import json
 import math
-import os
 import socket
 import struct
 import time
@@ -732,15 +731,24 @@ def test_track_loader_user_agent_and_http_error_detail() -> None:
     assert 'Access denied' in err_msg
 
 
-def test_willow_springs_reverse_real_track_and_error_rollover() -> None:
-    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    track_path = os.path.join(repo_root, 'data', 'tracks', 'willow_springs_reverse.json')
-    with open(track_path, 'r', encoding='utf-8') as f:
-        raw_track = json.load(f)
+def test_willow_springs_reverse_track_and_error_rollover() -> None:
+    ws_origin = rfactor.get_track_origin('Willow Springs Reverse')
+    raw_track = _make_circle_track_payload(ws_origin, lap_length=941.87)
+    raw_track['track_name'] = 'Willow Springs Reverse'
+    raw_track['origin'] = {'lat': 34.87085, 'lon': -118.26726}
+    raw_track['turns'] = [
+        {'name': 'Esses', 'start': 60, 'apex': [105, 136, 156, 178], 'end': 190},
+        {'name': 'Turn 9', 'start': 270, 'apex': [299], 'end': 313},
+        {'name': 'Hairpin 1', 'start': 447, 'apex': [494], 'end': 523},
+        {'name': 'Hairpin 2', 'start': 599, 'apex': [640], 'end': 666},
+        {'name': '90', 'start': 759, 'apex': [774], 'end': 786},
+        {'name': 'Hairpin 3', 'start': 839, 'apex': [877], 'end': 900},
+    ]
 
     track = parse_track_payload(raw_track, fallback_name='Willow Springs Reverse')
     assert track.track_name == 'Willow Springs Reverse'
     assert len(track.turns) == 6
+    assert track.turns[0].apexes == (105.0, 136.0, 156.0, 178.0)
 
     origin = resolve_track_origin(
         'kartsim',
