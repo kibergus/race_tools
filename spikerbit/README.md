@@ -77,3 +77,17 @@ Or in `BrBrDbTelemetry.json`, add a `"command"` entry to `"sinks"`:
   "server_address": "http://127.0.0.1:18920"
 }
 ```
+
+---
+
+## 5. Pre-Session `50/60 Hz` Mains Hum & Electrode Contact Indicator
+
+Spiker:bit Studio monitors the raw `500 Hz` stream before any notch filter (`EEG` and `ECG` modes) and displays a prominent, **non-blocking** alert banner, live bar meter + `10 s` sparkline, and raw hum envelope overlay on Lane 0:
+
+- **Green (`GOOD`, `< 15 ADC RMS`)**: Balanced electrode impedance (`ΔZ ≈ 0`) and valid bio-signal — ready for the session.
+- **Amber (`MODERATE`, `15–50 ADC RMS`)**: Mild pad impedance mismatch — press forehead gel pads firmly and check the ear/mastoid reference clip.
+- **Red (`HIGH HUM`, `≥ 50 ADC RMS`) / `RAILING` / `NO SIGNAL`**: Severe impedance mismatch or loose/railed lead. Uploads and controls are never blocked, so you can fix electrodes live before driving:
+  1. **Wipe skin & balance pads**: Clean forehead (`FP1`, `FP2`) and ear/mastoid reference with water/alcohol and ensure fresh conductive gel + even pressure.
+  2. **Twist/braid the 3 electrode leads together** and route them away from monitor power bricks and wheelbase cables.
+  3. **Use battery + BLE (`BLE://...`)** rather than an unisolated USB cable to a mains-grounded PC.
+  4. Select **`50 Hz`** (EU/UK) or **`60 Hz`** (North America) in the top **Mains / Notch** selector.

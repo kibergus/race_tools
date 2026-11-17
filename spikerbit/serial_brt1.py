@@ -219,8 +219,15 @@ class ClockSyncController:
 class MicrobitSimulator:
     """Realistic 500 Hz hardware-accurate micro:bit BRT1 stream simulator."""
 
-    def __init__(self, initial_mode: str = 'EEG') -> None:
+    def __init__(
+        self,
+        initial_mode: str = 'EEG',
+        hum_adc_rms: float = 0.0,
+        mains_hz: float = 50.0,
+    ) -> None:
         self.mode: str = initial_mode if initial_mode in VALID_MODES else 'EEG'
+        self.hum_adc_rms: float = float(hum_adc_rms)
+        self.mains_hz: float = float(mains_hz)
         self.time_100us: int = 0
         self.cc_ticks: int = NOMINAL_CC_TICKS
         self.force_baseline: bool = True
@@ -309,6 +316,9 @@ class MicrobitSimulator:
                 + 55.0 * math.sin(2.0 * math.pi * 145.0 * t_sec + 1.9)
             )
             val = 512.0 + burst_env * carrier
+
+        if self.hum_adc_rms > 0.0:
+            val += math.sqrt(2.0) * self.hum_adc_rms * math.sin(2.0 * math.pi * self.mains_hz * t_sec)
 
         return max(0, min(1023, int(round(val))))
 
@@ -441,6 +451,7 @@ class SpikerbitSerialClient:
         self._last_trim_mono: float = 0.0
         self._last_mcu_time_sec: float = 0.0
         self._samples_received: int = 0
+        self._last_sample_mono: float = 0.0
 
     @property
     def mode(self) -> str:
@@ -471,6 +482,12 @@ class SpikerbitSerialClient:
     def samples_received(self) -> int:
         """Return total number of 500 Hz samples decoded."""
         return self._samples_received
+
+    @property
+    def last_sample_monotonic(self) -> float:
+        """Return monotonic timestamp (seconds) of the most recently decoded sample, or 0.0."""
+        with self._samples_lock:
+            return self._last_sample_mono
 
     @property
     def clock_controller(self) -> ClockSyncController:
@@ -522,6 +539,7 @@ class SpikerbitSerialClient:
             self._times_ring.clear()
             self._adc_ring.clear()
             self._samples_received = 0
+            self._last_sample_mono = 0.0
         self._session_epoch_unix = time.time()
         with self._error_lock:
             self._pending_error = None
@@ -607,12 +625,14 @@ class SpikerbitSerialClient:
                             ClockSyncController.format_trim_command(offset_100us, cc_ticks)
                         )
             elif ev.chunk_type in (CHUNK_BASELINE, CHUNK_DELTA) and ev.samples:
+                now_mono = time.monotonic()
                 with self._samples_lock:
                     for t_val, adc_val in ev.samples:
                         self._times_ring.append(t_val)
                         self._adc_ring.append(adc_val)
                         self._last_mcu_time_sec = t_val
                         self._samples_received += 1
+                    self._last_sample_mono = now_mono
 
                 if self._on_raw_chunk is not None:
                     self._on_raw_chunk(ev)

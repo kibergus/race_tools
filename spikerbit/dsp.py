@@ -1,12 +1,285 @@
 """500 Hz real-time DSP filter bank for Spiker:bit EEG/EOG/Jaw-EMG, ECG, and EMG modes."""
 
-from dataclasses import dataclass
-from typing import List, Tuple
+import collections
+from dataclasses import dataclass, field
+import math
+from typing import Deque, List, Optional, Sequence, Tuple
 import numpy as np
 from scipy import signal
 
 
 FS_HZ = 500.0
+
+
+class Biquad:
+    """Direct Form II Transposed second-order IIR biquad filter (O(1) per sample)."""
+
+    def __init__(
+        self,
+        b0: float,
+        b1: float,
+        b2: float,
+        a0: float,
+        a1: float,
+        a2: float,
+    ) -> None:
+        self.b0 = b0 / a0
+        self.b1 = b1 / a0
+        self.b2 = b2 / a0
+        self.a1 = a1 / a0
+        self.a2 = a2 / a0
+        self.z1 = 0.0
+        self.z2 = 0.0
+
+    def reset(self) -> None:
+        """Clear filter delay state."""
+        self.z1 = 0.0
+        self.z2 = 0.0
+
+    def step(self, x: float) -> float:
+        """Advance filter by one sample and return filtered value."""
+        y = self.b0 * x + self.z1
+        self.z1 = self.b1 * x - self.a1 * y + self.z2
+        self.z2 = self.b2 * x - self.a2 * y
+        return y
+
+    @classmethod
+    def bandpass(cls, fs: float, f0: float, q: float) -> 'Biquad':
+        """Create a constant-skirt bandpass biquad centered at `f0`."""
+        w0 = 2.0 * math.pi * f0 / fs
+        alpha = math.sin(w0) / (2.0 * q)
+        return cls(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * math.cos(w0), 1.0 - alpha)
+
+    @classmethod
+    def notch(cls, fs: float, f0: float, q: float) -> 'Biquad':
+        """Create a notch (band-reject) biquad centered at `f0`."""
+        w0 = 2.0 * math.pi * f0 / fs
+        alpha = math.sin(w0) / (2.0 * q)
+        c = math.cos(w0)
+        return cls(1.0, -2.0 * c, 1.0, 1.0 + alpha, -2.0 * c, 1.0 - alpha)
+
+    @classmethod
+    def highpass(cls, fs: float, f0: float, q: float = 0.70710678) -> 'Biquad':
+        """Create a 2nd-order high-pass biquad with cutoff `f0`."""
+        w0 = 2.0 * math.pi * f0 / fs
+        alpha = math.sin(w0) / (2.0 * q)
+        c = math.cos(w0)
+        return cls(
+            (1.0 + c) / 2.0,
+            -(1.0 + c),
+            (1.0 + c) / 2.0,
+            1.0 + alpha,
+            -2.0 * c,
+            1.0 - alpha,
+        )
+
+    @classmethod
+    def lowpass(cls, fs: float, f0: float, q: float = 0.70710678) -> 'Biquad':
+        """Create a 2nd-order low-pass biquad with cutoff `f0`."""
+        w0 = 2.0 * math.pi * f0 / fs
+        alpha = math.sin(w0) / (2.0 * q)
+        c = math.cos(w0)
+        return cls(
+            (1.0 - c) / 2.0,
+            1.0 - c,
+            (1.0 - c) / 2.0,
+            1.0 + alpha,
+            -2.0 * c,
+            1.0 - alpha,
+        )
+
+
+@dataclass
+class HumMonitorSnapshot:
+    """Real-time mains hum & electrode contact quality readout."""
+
+    state: str
+    hum_rms: float
+    sig_rms: float
+    rail_pct: float
+    hum_p2p_pct_fs: float
+    f_mains: float
+    fault_reason: str = ''
+
+
+class EegHumMonitor:
+    """Streaming 50/60 Hz mains hum and electrode contact monitor on 500 Hz raw ADC samples."""
+
+    STATE_DISCONNECTED = 'DISCONNECTED_OR_RAILED'
+    STATE_GOOD = 'GOOD'
+    STATE_MODERATE = 'MODERATE'
+    STATE_HIGH = 'HIGH_HUM'
+
+    def __init__(
+        self,
+        fs: float = FS_HZ,
+        f_mains: float = 50.0,
+        window_s: float = 0.50,
+        hop_s: float = 0.25,
+        ema_alpha: float = 0.35,
+        history_seconds: float = 10.0,
+    ) -> None:
+        self.fs = float(fs)
+        self.f_mains = float(f_mains)
+        self.win_n = max(50, int(round(window_s * self.fs)))
+        self.hop_n = max(25, int(round(hop_s * self.fs)))
+        self.ema_alpha = float(ema_alpha)
+        self._history_maxlen = max(4, int(round(history_seconds / hop_s)))
+
+        self.bp_hum = Biquad.bandpass(self.fs, self.f_mains, self.f_mains / 4.0)
+        self.ref_hp = Biquad.highpass(self.fs, 1.0)
+        self.ref_notch = Biquad.notch(self.fs, self.f_mains, 20.0)
+        self.ref_lp = Biquad.lowpass(self.fs, 35.0)
+
+        self.buf_hum: List[float] = [0.0] * self.win_n
+        self.buf_sig: List[float] = [0.0] * self.win_n
+        self.buf_rail: List[float] = [0.0] * self.win_n
+        self.ptr = 0
+        self.filled = 0
+        self.hop_ctr = 0
+        self.hum_rms_ema = 0.0
+        self.sig_rms_ema = 0.0
+        self.rail_pct_last = 0.0
+        self.initialized = False
+        self.state = self.STATE_DISCONNECTED
+        self.fault_reason = 'WARMING_UP'
+        self._history: Deque[float] = collections.deque(maxlen=self._history_maxlen)
+
+    def reset(self) -> None:
+        """Reset streaming filter states, buffers, hysteresis state, and sparkline history."""
+        self.bp_hum.reset()
+        self.ref_hp.reset()
+        self.ref_notch.reset()
+        self.ref_lp.reset()
+        self.buf_hum = [0.0] * self.win_n
+        self.buf_sig = [0.0] * self.win_n
+        self.buf_rail = [0.0] * self.win_n
+        self.ptr = 0
+        self.filled = 0
+        self.hop_ctr = 0
+        self.hum_rms_ema = 0.0
+        self.sig_rms_ema = 0.0
+        self.rail_pct_last = 0.0
+        self.initialized = False
+        self.state = self.STATE_DISCONNECTED
+        self.fault_reason = 'WARMING_UP'
+        self._history.clear()
+
+    def set_mains_frequency(self, f_mains: float) -> None:
+        """Retune the mains bandpass and reference notch between 50 Hz and 60 Hz."""
+        target_hz = float(f_mains)
+        if abs(target_hz - self.f_mains) > 0.1:
+            self.f_mains = target_hz
+            self.bp_hum = Biquad.bandpass(self.fs, self.f_mains, self.f_mains / 4.0)
+            self.ref_notch = Biquad.notch(self.fs, self.f_mains, 20.0)
+            self.reset()
+
+    @property
+    def history(self) -> List[float]:
+        """Return recent EMA `hum_rms` history (up to `history_seconds`)."""
+        return list(self._history)
+
+    def snapshot(self, force_stale: bool = False) -> HumMonitorSnapshot:
+        """Return the latest hum snapshot, optionally flagging a stale input stream."""
+        state = self.STATE_DISCONNECTED if force_stale else self.state
+        fault_reason = 'STALE' if force_stale else self.fault_reason
+        hum_p2p_pct_fs = (2.0 * math.sqrt(2.0) * self.hum_rms_ema / 1023.0) * 100.0
+        return HumMonitorSnapshot(
+            state=state,
+            hum_rms=self.hum_rms_ema,
+            sig_rms=self.sig_rms_ema,
+            rail_pct=self.rail_pct_last,
+            hum_p2p_pct_fs=hum_p2p_pct_fs,
+            f_mains=self.f_mains,
+            fault_reason=fault_reason,
+        )
+
+    def push_sample(self, raw_adc: float) -> Optional[HumMonitorSnapshot]:
+        """Push one 500 Hz raw ADC sample; emit a `HumMonitorSnapshot` every hop."""
+        if not math.isfinite(raw_adc):
+            raw_adc = 512.0
+            is_rail = 1.0
+        else:
+            is_rail = 1.0 if (raw_adc <= 10.0 or raw_adc >= 1013.0) else 0.0
+
+        centered = raw_adc - 512.0
+        h = self.bp_hum.step(centered)
+        s = self.ref_lp.step(self.ref_notch.step(self.ref_hp.step(centered)))
+
+        self.buf_hum[self.ptr] = h * h
+        self.buf_sig[self.ptr] = s * s
+        self.buf_rail[self.ptr] = is_rail
+        self.ptr = (self.ptr + 1) % self.win_n
+        self.filled = min(self.win_n, self.filled + 1)
+        self.hop_ctr += 1
+        if self.filled < self.win_n or self.hop_ctr < self.hop_n:
+            return None
+        self.hop_ctr = 0
+
+        hum_rms = math.sqrt(sum(self.buf_hum) / self.win_n)
+        sig_rms = math.sqrt(sum(self.buf_sig) / self.win_n)
+        rail_pct = (sum(self.buf_rail) / self.win_n) * 100.0
+        self.rail_pct_last = rail_pct
+
+        if not self.initialized:
+            self.hum_rms_ema = hum_rms
+            self.sig_rms_ema = sig_rms
+            self.initialized = True
+        else:
+            a = self.ema_alpha
+            self.hum_rms_ema = a * hum_rms + (1.0 - a) * self.hum_rms_ema
+            self.sig_rms_ema = a * sig_rms + (1.0 - a) * self.sig_rms_ema
+
+        self._history.append(self.hum_rms_ema)
+
+        if rail_pct > 2.0:
+            self.state = self.STATE_DISCONNECTED
+            self.fault_reason = 'RAILED'
+        elif self.sig_rms_ema < 1.5:
+            self.state = self.STATE_DISCONNECTED
+            self.fault_reason = 'FLATLINE'
+        else:
+            self.fault_reason = ''
+            v = self.hum_rms_ema
+            if self.state == self.STATE_GOOD:
+                if v >= 53.0:
+                    self.state = self.STATE_HIGH
+                elif v >= 18.0:
+                    self.state = self.STATE_MODERATE
+                else:
+                    self.state = self.STATE_GOOD
+            elif self.state == self.STATE_MODERATE:
+                if v < 12.0:
+                    self.state = self.STATE_GOOD
+                elif v >= 53.0:
+                    self.state = self.STATE_HIGH
+                else:
+                    self.state = self.STATE_MODERATE
+            elif self.state == self.STATE_HIGH:
+                if v < 12.0:
+                    self.state = self.STATE_GOOD
+                elif v < 47.0:
+                    self.state = self.STATE_MODERATE
+                else:
+                    self.state = self.STATE_HIGH
+            else:
+                if v < 15.0:
+                    self.state = self.STATE_GOOD
+                elif v < 50.0:
+                    self.state = self.STATE_MODERATE
+                else:
+                    self.state = self.STATE_HIGH
+
+        return self.snapshot()
+
+    def push_samples(self, raw_adcs: Sequence[float]) -> Optional[HumMonitorSnapshot]:
+        """Push a batch of 500 Hz raw ADC samples and return the latest emitted snapshot."""
+        latest: Optional[HumMonitorSnapshot] = None
+        for val in raw_adcs:
+            snap = self.push_sample(float(val))
+            if snap is not None:
+                latest = snap
+        return latest
 
 
 @dataclass
@@ -25,6 +298,7 @@ class DspResult:
     headline_metric: str
     sub_metric: str
     blink_indices: List[int]
+    unfiltered_centered: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
 
 
 class SpikerbitDspProcessor:
@@ -134,12 +408,17 @@ class SpikerbitDspProcessor:
         notched = self._apply_sos(self._sos_notch, centered)
 
         if clean_mode == 'EEG':
-            return self._process_eeg(notched, contact)
+            return self._process_eeg(notched, contact, centered)
         if clean_mode == 'ECG':
-            return self._process_ecg(notched, contact)
-        return self._process_emg(notched, contact)
+            return self._process_ecg(notched, contact, centered)
+        return self._process_emg(notched, contact, centered)
 
-    def _process_eeg(self, notched: np.ndarray, contact: str) -> DspResult:
+    def _process_eeg(
+        self,
+        notched: np.ndarray,
+        contact: str,
+        unfiltered_centered: Optional[np.ndarray] = None,
+    ) -> DspResult:
         eog = self._apply_sos(self._sos_eog, notched)
         theta = self._apply_sos(self._sos_theta, notched)
         alpha = self._apply_sos(self._sos_alpha, notched)
@@ -172,6 +451,11 @@ class SpikerbitDspProcessor:
         engagement = p_beta / (p_alpha + p_theta)
         fatigue = p_theta / p_alpha
 
+        raw_unfiltered = (
+            unfiltered_centered
+            if unfiltered_centered is not None
+            else np.zeros(0, dtype=np.float64)
+        )
         return DspResult(
             mode='EEG',
             contact_status=contact,
@@ -185,15 +469,26 @@ class SpikerbitDspProcessor:
             headline_metric=f'Engagement: {engagement:.2f}  |  Blinks: {len(blink_indices)}',
             sub_metric=f'Fatigue (Theta/Alpha): {fatigue:.2f}  |  Jaw RMS: {float(np.mean(jaw_rms)):.1f}',
             blink_indices=blink_indices,
+            unfiltered_centered=raw_unfiltered,
         )
 
-    def _process_ecg(self, notched: np.ndarray, contact: str) -> DspResult:
+    def _process_ecg(
+        self,
+        notched: np.ndarray,
+        contact: str,
+        unfiltered_centered: Optional[np.ndarray] = None,
+    ) -> DspResult:
         qrs = self._apply_sos(self._sos_ecg_qrs, notched)
         qrs_env = self._moving_rms(qrs, int(0.040 * self.fs))
 
         bpm, rmssd_ms, r_peaks = self._compute_hr_and_rmssd(qrs)
         hr_trace = np.full_like(qrs, bpm)
 
+        raw_unfiltered = (
+            unfiltered_centered
+            if unfiltered_centered is not None
+            else np.zeros(0, dtype=np.float64)
+        )
         return DspResult(
             mode='ECG',
             contact_status=contact,
@@ -207,6 +502,7 @@ class SpikerbitDspProcessor:
             headline_metric=f'Heart Rate: {bpm:.1f} BPM' if bpm > 0 else 'Heart Rate: -- BPM',
             sub_metric=f'HRV (RMSSD): {rmssd_ms:.1f} ms  |  Beats: {len(r_peaks)}',
             blink_indices=r_peaks,
+            unfiltered_centered=raw_unfiltered,
         )
 
     def _compute_hr_and_rmssd(self, qrs: np.ndarray) -> Tuple[float, float, List[int]]:
@@ -236,12 +532,22 @@ class SpikerbitDspProcessor:
             rmssd_ms = 0.0
         return bpm, rmssd_ms, r_indices
 
-    def _process_emg(self, notched: np.ndarray, contact: str) -> DspResult:
+    def _process_emg(
+        self,
+        notched: np.ndarray,
+        contact: str,
+        unfiltered_centered: Optional[np.ndarray] = None,
+    ) -> DspResult:
         emg_band = self._apply_sos(self._sos_emg_full, notched)
         emg_rms = self._moving_rms(emg_band, int(0.050 * self.fs))  # 50 ms RMS envelope
         peak_rms = float(np.max(emg_rms)) if emg_rms.size > 0 else 0.0
         mean_rms = float(np.mean(emg_rms)) if emg_rms.size > 0 else 0.0
 
+        raw_unfiltered = (
+            unfiltered_centered
+            if unfiltered_centered is not None
+            else np.zeros(0, dtype=np.float64)
+        )
         return DspResult(
             mode='EMG',
             contact_status=contact,
@@ -255,4 +561,5 @@ class SpikerbitDspProcessor:
             headline_metric=f'Mean Activation RMS: {mean_rms:.1f}',
             sub_metric=f'Peak Burst RMS: {peak_rms:.1f}',
             blink_indices=[],
+            unfiltered_centered=raw_unfiltered,
         )
