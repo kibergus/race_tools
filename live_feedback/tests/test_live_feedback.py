@@ -7,6 +7,7 @@ import json
 import math
 import socket
 import struct
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import patch
@@ -33,6 +34,7 @@ from live_feedback.engine import (
     project_to_centerline,
 )
 from live_feedback.main import LiveFeedbackApp, LiveFeedbackController
+from live_feedback.overlay import OverlayStateHub, build_best_turns_speed_grid
 from live_feedback.stream_server import DecodedSample, LiveStreamServer
 from live_feedback.track_loader import (
     TrackData,
@@ -929,3 +931,429 @@ def test_evaluate_session_offline_and_cli(
     assert 'sample_session.brt1.br' in out
     assert 'Clean passes' in out
     assert 'Turn 1' in out
+
+
+def test_overlay_http_sse_pedals_gaze_and_wraparound_turns() -> None:
+    origin = rfactor.get_track_origin('Rowrah')
+    lap_len = 1000.0
+    raw_track = _make_circle_track_payload(origin, lap_length=lap_len)
+    raw_track['turns'] = [
+        {'name': 'Final Wrap', 'start': 920.0, 'apex': 980.0, 'end': 40.0},
+        {'name': 'Hairpin', 'start': 200.0, 'apex': 250.0, 'end': 300.0},
+    ]
+    track = parse_track_payload(raw_track)
+
+    class _StubLoader(TrackLoader):
+        def fetch(
+            self,
+            server_url: str,
+            track_name: str,
+            api_key: str = '',
+            timeout: float = 5.0,
+        ) -> TrackData:
+            return track
+
+    class _SilentAudio(AudioCuePlayer):
+        def play_turn_cue(
+            self,
+            delta_s: float,
+            new_best_threshold_s: Optional[float] = None,
+            max_loss_s: Optional[float] = None,
+        ) -> None:
+            return None
+
+    hub = OverlayStateHub()
+    controller = LiveFeedbackController(
+        server_url='https://example.test',
+        track_loader=_StubLoader(),
+        audio=_SilentAudio(),
+        overlay_hub=hub,
+    )
+    server = LiveStreamServer(
+        host='127.0.0.1',
+        port=0,
+        on_header=controller.on_header,
+        on_samples=controller.on_samples,
+        on_gaze_samples=controller.on_gaze_samples,
+        overlay_hub=hub,
+    )
+    server.start()
+    try:
+        base_url = f'http://127.0.0.1:{server.bound_port}'
+
+        # 1. Verify GET /overlay HTML and omitted widgets/simulator
+        with urllib.request.urlopen(f'{base_url}/overlay', timeout=3.0) as resp:
+            assert resp.status == 200
+            html = resp.read().decode('utf-8')
+            assert '<canvas id="hud"' in html
+            assert 'state.pedalHist' in html
+            assert 'THROTTLE / BRAKE' not in html
+            assert 'label: "C"' not in html
+            assert 'state.bestTurnsSpeed' in html
+            assert 'FULL-LAP SPEED' not in html
+            assert '"Current Lap"' not in html
+            assert '"Best Lap"' not in html
+            assert '"Best Turn"' not in html
+            assert 'const px = 0;' in html
+            assert 'const py = 0;' in html
+            assert 'formatTurnLabel(t)' in html
+            assert '"T" + (t.index + 1)' not in html
+            assert 'return "T" + num' not in html
+            assert 'turn_times' in html
+            assert '"TURN"' in html
+            assert '"LAST"' in html
+            assert '"BEST"' in html
+            assert '"DELTA"' in html
+            assert 'WAITING FOR TELEMETRY' not in html
+            assert '"LAP "' not in html
+            assert 'Steering' not in html
+            assert 'GEAR' not in html
+            assert 'startDemoLoop' not in html
+            assert 'Buckmore Park (DEMO)' not in html
+
+        # 2. Connect an SSE /events reader socket
+        sse_sock = socket.create_connection(('127.0.0.1', server.bound_port), timeout=3.0)
+        sse_sock.sendall(
+            b'GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n'
+        )
+        sse_buf = bytearray()
+        deadline = time.monotonic() + 2.0
+        while b'data: ' not in sse_buf and time.monotonic() < deadline:
+            sse_buf.extend(sse_sock.recv(4096))
+        assert b'200 OK' in sse_buf
+        assert b'"type":"init"' in sse_buf
+
+        # 3. Connect tobii_gaze and tobii_face BEFORE vehicle stream
+        gaze_meta = {'Track name': 'Rowrah', 'Driver name': 'Kiber', 'stream': 'tobii_gaze'}
+        gaze_ch = [
+            {'name': 'Time', 'scale': 0.0001},
+            {'name': 'Gaze X', 'scale': 0.0001},
+            {'name': 'Gaze Y', 'scale': 0.0001},
+        ]
+        face_meta = {'Track name': 'Rowrah', 'Driver name': 'Kiber', 'stream': 'tobii_face'}
+        face_ch = [{'name': 'Time', 'scale': 0.0001}, {'name': 'Head Yaw', 'scale': 0.01}]
+
+        def _send_one_shot(meta_obj: Dict[str, Any], ch_list: List[Dict[str, Any]], rows: List[List[float]]) -> None:
+            sc = [float(c['scale']) for c in ch_list]
+            with socket.create_connection(('127.0.0.1', server.bound_port), timeout=3.0) as s:
+                s.sendall(
+                    (
+                        'POST /api/upload/stream HTTP/1.1\r\n'
+                        'Host: 127.0.0.1\r\n'
+                        'Content-Type: application/octet-stream\r\n'
+                        'Transfer-Encoding: chunked\r\n\r\n'
+                    ).encode('ascii')
+                )
+                s.sendall(_http_chunk(_frame_brt1_chunk(0x01, b'BRT1')))
+                s.sendall(_http_chunk(_encode_brt1_metadata(meta_obj, ch_list)))
+                s.sendall(_http_chunk(_encode_brt1_baseline(rows[0])))
+                if len(rows) > 1:
+                    s.sendall(_http_chunk(_encode_brt1_delta_rows(rows[0], rows[1:], sc)))
+                s.sendall(_http_chunk(_frame_brt1_chunk(0xFF, b'')))
+                s.sendall(b'0\r\n\r\n')
+                s.recv(4096)
+
+        _send_one_shot(face_meta, face_ch, [[0.1, 4.2]])
+        # Vehicle session should NOT have been triggered by tobii_face
+        assert controller.snapshot().session_active is False
+
+        # 4. Stream vehicle telemetry (2 full laps + Turn 1 faster on Lap 3) with pedals
+        veh_meta = {
+            'Track name': 'Rowrah',
+            'Date': '2026-11-17',
+            'Time': '20:30:00',
+            'Driver name': 'Test Driver',
+            'League': 'kartsim',
+            'Class': 'cadet',
+            'Session': 'Practice',
+        }
+        veh_ch = [
+            {'name': 'Time', 'scale': 0.001},
+            {'name': 'x', 'scale': 0.001},
+            {'name': 'z', 'scale': 0.001},
+            {'name': 'Speed', 'scale': 0.01},
+            {'name': 'Throttle', 'scale': 0.1},
+            {'name': 'Brake', 'scale': 0.1},
+            {'name': 'Clutch', 'scale': 0.1},
+        ]
+        veh_sc = [float(c['scale']) for c in veh_ch]
+
+        veh_rows: List[List[float]] = []
+        t_cur = 0.0
+        s_cur = 850.0  # start mid-lap, cross S/F into Lap 2 (clean), then Lap 3
+        dt = 0.025
+        total_dist_target = 2300.0
+        moved = 0.0
+        while moved < total_dist_target:
+            s_lap = s_cur % lap_len
+            # Lap 3 goes faster through wraparound Turn 0 (920..40..200)
+            in_wrap_turn = s_lap >= 900.0 or s_lap <= 180.0
+            lap_idx = int((s_cur - 0.0) // lap_len)
+            v = 22.0 if (lap_idx >= 2 and in_wrap_turn) else 19.0
+            thr = 95.0 if s_lap < 880.0 else 0.0
+            brk = 0.0 if s_lap < 880.0 else 72.5
+            x, z = _circle_xy_at_dist(s_lap, lap_len)
+            veh_rows.append([t_cur, x, z, v, thr, brk, 0.0])
+            ds = v * dt
+            s_cur += ds
+            moved += ds
+            t_cur += dt
+
+        with socket.create_connection(('127.0.0.1', server.bound_port), timeout=5.0) as vsock:
+            vsock.sendall(
+                (
+                    'POST /api/upload/stream HTTP/1.1\r\n'
+                    'Host: 127.0.0.1\r\n'
+                    'Content-Type: application/octet-stream\r\n'
+                    'Transfer-Encoding: chunked\r\n\r\n'
+                ).encode('ascii')
+            )
+            vsock.sendall(_http_chunk(_frame_brt1_chunk(0x01, b'BRT1')))
+            vsock.sendall(_http_chunk(_encode_brt1_metadata(veh_meta, veh_ch)))
+            vsock.sendall(_http_chunk(_encode_brt1_baseline(veh_rows[0])))
+            prev = list(veh_rows[0])
+            for row in veh_rows[1:]:
+                vsock.sendall(_http_chunk(_encode_brt1_delta_rows(prev, [row], veh_sc)))
+                for c, val in enumerate(row):
+                    q = int(round((val - prev[c]) / veh_sc[c]))
+                    prev[c] += q * veh_sc[c]
+            vsock.sendall(_http_chunk(_frame_brt1_chunk(0xFF, b'')))
+            vsock.sendall(b'0\r\n\r\n')
+            vsock.recv(4096)
+
+        # Send valid gaze, then NaN blink gaze
+        _send_one_shot(gaze_meta, gaze_ch, [[0.5, 0.42, 0.31]])
+        time.sleep(0.025)
+        _send_one_shot(gaze_meta, gaze_ch, [[0.6, float('nan'), float('nan')]])
+
+        # Drain SSE events emitted
+        sse_sock.settimeout(0.3)
+        end_read = time.monotonic() + 1.0
+        while time.monotonic() < end_read:
+            try:
+                part = sse_sock.recv(8192)
+                if not part:
+                    break
+                sse_buf.extend(part)
+            except socket.timeout:
+                break
+
+        sse_text = sse_buf.decode('utf-8', errors='replace')
+        events = [
+            json.loads(line[6:])
+            for line in sse_text.splitlines()
+            if line.startswith('data: ')
+        ]
+        ev_types = {e['type'] for e in events}
+        assert 'init' in ev_types
+        assert 'track' in ev_types
+        assert 'best_lap' in ev_types
+        assert 'best_turns' in ev_types
+        assert 'tick' in ev_types
+
+        best_turn_ev = [e for e in events if e['type'] == 'best_turns'][-1]
+        # Wraparound Turn 0 covers indices near start AND end of lap grid!
+        speeds_bt = best_turn_ev['speeds']
+        assert speeds_bt[0] is not None and speeds_bt[-1] is not None
+
+        ticks = [e for e in events if e['type'] == 'tick']
+        assert any(t['gaze'].get('valid') is True for t in ticks)
+        assert ticks[-1]['gaze']['valid'] is False
+        assert ticks[-1]['segment']['turn_name'] in ('Final Wrap', 'Hairpin')
+        assert controller.snapshot().gaze_samples_received == 2
+
+        last_tt = ticks[-1]['turn_times']
+        assert set(last_tt.keys()) == {'0', '1'}
+        for turn_k in ('0', '1'):
+            assert isinstance(last_tt[turn_k]['last_s'], float)
+            assert isinstance(last_tt[turn_k]['best_s'], float)
+            assert isinstance(last_tt[turn_k]['delta_s'], float)
+        assert any(
+            t.get('turn_times', {}).get('0', {}).get('kind') == 'actual'
+            for t in ticks
+        )
+        assert any(
+            t.get('turn_times', {}).get('1', {}).get('kind') == 'actual'
+            for t in ticks
+        )
+
+        # Verify direct build_best_turns_speed_grid helper matches populated wraparound
+        grid = np.linspace(0.0, lap_len, 200, endpoint=False)
+        bm_grid = build_best_turns_speed_grid(
+            track, grid, controller._engine.benchmark_store.all_benchmarks()  # type: ignore[union-attr]
+        )
+        assert bm_grid[0] is not None and bm_grid[-1] is not None
+    finally:
+        # Active SSE connection still open -> server.stop() must unblock and finish promptly
+        t0 = time.monotonic()
+        server.stop()
+        assert (time.monotonic() - t0) < 2.0
+        sse_sock.close()
+
+
+def test_track_loader_local_fallback(tmp_path: Any) -> None:
+    origin = rfactor.get_track_origin('Rowrah')
+    payload = _make_circle_track_payload(origin, lap_length=1000.0)
+    payload['track_name'] = 'Buckmore Park'
+    payload['aliases'] = ['Buckmore Park 2026']
+    (tmp_path / 'buckmore_park_2026.json').write_text(
+        json.dumps(payload), encoding='utf-8'
+    )
+
+    loader = TrackLoader(fallback_tracks_dir=str(tmp_path))
+    # Without API key -> resolves directly from local JSON
+    td = loader.fetch('https://example.invalid', 'Buckmore Park 2026', api_key='')
+    assert td.track_name == 'Buckmore Park'
+    assert len(td.turns) == 2
+
+    # With API key but remote HTTP error -> still falls back to local JSON
+    loader.clear_cache()
+    with patch(
+        'live_feedback.track_loader.urllib.request.urlopen',
+        side_effect=OSError('offline'),
+    ):
+        td2 = loader.fetch('https://example.invalid', 'Buckmore Park', api_key='k')
+    assert td2.track_name == 'Buckmore Park'
+
+
+def test_gaze_monocular_fallback_status_and_health() -> None:
+    from live_feedback.stream_server import DecodedGazeSample
+
+    hub = OverlayStateHub()
+    controller = LiveFeedbackController(server_url='https://example.test', overlay_hub=hub)
+    decoded_batches: List[DecodedGazeSample] = []
+
+    def _on_gaze(session_key: str, samples: List[DecodedGazeSample]) -> None:
+        decoded_batches.extend(samples)
+        controller.on_gaze_samples(session_key, samples)
+
+    server = LiveStreamServer(
+        host='127.0.0.1',
+        port=0,
+        on_header=controller.on_header,
+        on_samples=controller.on_samples,
+        on_gaze_samples=_on_gaze,
+        overlay_hub=hub,
+        status_provider=controller.health_status,
+    )
+    server.start()
+    try:
+        base_url = f'http://127.0.0.1:{server.bound_port}'
+        gaze_meta = {'stream': 'tobii_gaze', 'standby': True}
+        gaze_ch = [
+            {'name': 'Time', 'scale': 0.0001},
+            {'name': 'Gaze X', 'scale': 0.0001},
+            {'name': 'Gaze Y', 'scale': 0.0001},
+            {'name': 'Gaze Unfiltered X', 'scale': 0.0001},
+            {'name': 'Gaze Unfiltered Y', 'scale': 0.0001},
+            {'name': 'Left Gaze X', 'scale': 0.0001},
+            {'name': 'Left Gaze Y', 'scale': 0.0001},
+            {'name': 'Right Gaze X', 'scale': 0.0001},
+            {'name': 'Right Gaze Y', 'scale': 0.0001},
+        ]
+        scales = [float(c['scale']) for c in gaze_ch]
+        nan = float('nan')
+
+        def _post_gaze(rows: List[List[float]]) -> None:
+            with socket.create_connection(('127.0.0.1', server.bound_port), timeout=3.0) as s:
+                s.sendall(
+                    (
+                        'POST /api/upload/stream HTTP/1.1\r\n'
+                        'Host: 127.0.0.1\r\n'
+                        'Content-Type: application/octet-stream\r\n'
+                        'Transfer-Encoding: chunked\r\n\r\n'
+                    ).encode('ascii')
+                )
+                s.sendall(_http_chunk(_frame_brt1_chunk(0x01, b'BRT1')))
+                s.sendall(_http_chunk(_encode_brt1_metadata(gaze_meta, gaze_ch)))
+                prev: Optional[List[float]] = None
+                for row in rows:
+                    needs_baseline = prev is None or any(
+                        math.isnan(p) and not math.isnan(v)
+                        for p, v in zip(prev, row)
+                    )
+                    if needs_baseline:
+                        s.sendall(_http_chunk(_encode_brt1_baseline(row)))
+                    else:
+                        assert prev is not None
+                        s.sendall(
+                            _http_chunk(
+                                _encode_brt1_delta_rows(prev, [row], scales)
+                            )
+                        )
+                    prev = list(row)
+                s.sendall(_http_chunk(_frame_brt1_chunk(0xFF, b'')))
+                s.sendall(b'0\r\n\r\n')
+                s.recv(4096)
+
+        _post_gaze([
+            [0.01, nan, nan, nan, nan, 0.25, 0.40, 0.35, 0.50],
+            [0.02, nan, nan, nan, nan, 0.22, 0.33, nan, nan],
+            [0.03, nan, nan, nan, nan, nan, nan, 0.64, 0.52],
+            [0.04, nan, nan, nan, nan, nan, nan, nan, nan],
+        ])
+
+        assert len(decoded_batches) == 4
+        assert decoded_batches[0].gaze_valid is True
+        assert math.isclose(decoded_batches[0].gaze_x or 0.0, 0.30, abs_tol=1e-4)
+        assert math.isclose(decoded_batches[0].gaze_y or 0.0, 0.45, abs_tol=1e-4)
+        assert decoded_batches[1].gaze_valid is True
+        assert math.isclose(decoded_batches[1].gaze_x or 0.0, 0.22, abs_tol=1e-4)
+        assert math.isclose(decoded_batches[1].gaze_y or 0.0, 0.33, abs_tol=1e-4)
+        assert decoded_batches[2].gaze_valid is True
+        assert math.isclose(decoded_batches[2].gaze_x or 0.0, 0.64, abs_tol=1e-4)
+        assert math.isclose(decoded_batches[2].gaze_y or 0.0, 0.52, abs_tol=1e-4)
+        assert decoded_batches[3].gaze_valid is False
+
+        snap_nan = controller.snapshot()
+        assert snap_nan.gaze_samples_received == 4
+        assert snap_nan.gaze_valid_received == 3
+        assert snap_nan.last_gaze_valid is False
+
+        _post_gaze([[0.05, 0.48, 0.51, nan, nan, nan, nan, nan, nan]])
+        snap_ok = controller.snapshot()
+        assert snap_ok.gaze_samples_received == 5
+        assert snap_ok.gaze_valid_received == 4
+        assert snap_ok.last_gaze_valid is True
+
+        with urllib.request.urlopen(f'{base_url}/health', timeout=3.0) as resp:
+            assert resp.status == 200
+            health = json.loads(resp.read().decode('utf-8'))
+        assert health['status'] == 'ok'
+        assert health['gaze_samples_received'] == 5
+        assert health['gaze_valid_received'] == 4
+        assert health['last_gaze_valid'] is True
+        assert isinstance(health['gaze_age_s'], float)
+
+        bound_p = server.bound_port
+        if sys.platform == 'win32':
+            dup_srv = LiveStreamServer(host='127.0.0.1', port=bound_p)
+            with pytest.raises(OSError):
+                dup_srv.start()
+
+        shutdown_req = urllib.request.Request(
+            f'{base_url}/api/shutdown',
+            data=b'{}',
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with urllib.request.urlopen(shutdown_req, timeout=2.0) as sd_resp:
+            assert sd_resp.status == 200
+            assert json.loads(sd_resp.read().decode('utf-8'))['status'] == 'shutting_down'
+
+        rebound = LiveStreamServer(host='127.0.0.1', port=bound_p)
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                rebound.start()
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+        try:
+            assert rebound.bound_port == bound_p
+        finally:
+            rebound.stop()
+    finally:
+        server.stop()

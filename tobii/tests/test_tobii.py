@@ -5,11 +5,13 @@ import hmac
 import json
 import math
 import os
+import socket
 import struct
 import tempfile
 import threading
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+from unittest.mock import patch
 import urllib.request
 
 import brotli
@@ -83,8 +85,19 @@ from tobii.ttp_protocol import (
     tlv_tag,
     tlv_u32,
 )
-from tobii.uploader import BrotliBrt1Segment, TobiiAuxSessionManager
-from tobii.usb_transport import BaseUsbTransport, UsbTransportError
+from tobii.uploader import (
+    BrotliBrt1Segment,
+    TobiiAuxSessionManager,
+    UploadSinkConfig,
+    extract_upload_targets,
+    parse_sink_spec,
+)
+from tobii.usb_transport import (
+    BaseUsbTransport,
+    WINDOWS_TOBII_SERVICES,
+    UsbTransportError,
+    get_windows_tobii_services_running,
+)
 
 
 def _wrap_in_envelope(ttp_bytes: bytes) -> bytes:
@@ -1425,3 +1438,493 @@ def test_fullscreen_calibration_opens_in_verify_and_populates_edid(monkeypatch: 
             assert app._active_cal_overlay is None
         finally:
             app._on_close()
+
+
+def _start_brt1_test_rx(
+    hdr_out: List[Tuple[str, Dict[str, Any]]],
+    gaze_out: List[Any],
+) -> Any:
+    """Start a local chunked-HTTP BRT1 receiver for Tobii uploader tests."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from socketserver import ThreadingMixIn
+    from live_feedback.stream_server import DecodedGazeSample, _iter_http_body_chunks
+
+    class _MultiStreamHandler(BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.1'
+
+        def log_message(self, format_str: str, *args: Any) -> None:
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            dec = Brt1StreamDecoder()
+            for chunk in _iter_http_body_chunks(self.rfile, self.headers):
+                dec.feed(chunk)
+                for ev in dec.pop_events():
+                    if ev.chunk_type == CHUNK_METADATA and ev.metadata:
+                        hdr_out.append((ev.metadata.get('stream', ''), ev.metadata))
+                    elif ev.samples and dec.metadata.get('stream') == STREAM_TOBII_GAZE:
+                        for row in ev.samples:
+                            gx, gy = row[1], row[2]
+                            valid = not (math.isnan(gx) or math.isnan(gy))
+                            gaze_out.append(
+                                DecodedGazeSample(
+                                    time_s=row[0],
+                                    gaze_x=gx if valid else None,
+                                    gaze_y=gy if valid else None,
+                                    gaze_valid=valid,
+                                    is_live=True,
+                                )
+                            )
+            body = b'{"status":"ok"}'
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    class _Srv(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+
+    s = _Srv(('127.0.0.1', 0), _MultiStreamHandler)
+    t = threading.Thread(target=s.serve_forever, daemon=True)
+    t.start()
+    s._thread = t  # type: ignore[attr-defined]
+    return s
+
+
+def test_aux_session_manager_live_multisink_brt1_streaming() -> None:
+    """Verify Tobii streams live chunked BRT1 simultaneously to multiple HTTP sinks before stop."""
+    from live_feedback.stream_server import DecodedGazeSample
+
+    srv1_headers: List[Tuple[str, Dict[str, Any]]] = []
+    srv1_gaze: List[DecodedGazeSample] = []
+    srv2_headers: List[Tuple[str, Dict[str, Any]]] = []
+    srv2_gaze: List[DecodedGazeSample] = []
+
+    rx1 = _start_brt1_test_rx(srv1_headers, srv1_gaze)
+    rx2 = _start_brt1_test_rx(srv2_headers, srv2_gaze)
+    assert isinstance(parse_sink_spec('http://127.0.0.1:18922'), UploadSinkConfig)
+    assert parse_sink_spec('http://127.0.0.1:18922').max_retries == 0
+    assert parse_sink_spec('https://brbrdb.brbrkitten.com').max_retries == 5
+
+    try:
+        url1 = f'http://127.0.0.1:{rx1.server_address[1]}'  # type: ignore[attr-defined]
+        url2 = f'http://127.0.0.1:{rx2.server_address[1]}'  # type: ignore[attr-defined]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            mgr = TobiiAuxSessionManager(
+                host='127.0.0.1',
+                port=0,
+                rollover_interval_sec=30.0,
+                backup_dir=tmp_dir,
+            )
+            mgr.start()
+            try:
+                base_url = f'http://127.0.0.1:{mgr.bound_port}'
+                hb_body = json.dumps({
+                    'session_start_unix_ms': 1710000500_000,
+                    'participant_tag': '',
+                    'metadata': {
+                        'Track name': 'Rowrah',
+                        'Driver name': 'Kiber',
+                        'League': 'kartsim',
+                        'Class': 'cadet',
+                        'Session': 'Practice',
+                    },
+                    'upload_targets': [
+                        {
+                            'server_address': url1,
+                            'api_key': 'key-1',
+                            'max_retries': 2,
+                            'buffer_duration_minutes': 5,
+                        },
+                        {
+                            'server_address': url2,
+                            'api_key': '',
+                            'max_retries': 0,
+                            'buffer_duration_minutes': 0,
+                        },
+                    ],
+                }).encode('utf-8')
+
+                req = urllib.request.Request(
+                    f'{base_url}/api/session/heartbeat',
+                    data=hb_body,
+                    headers={'Content-Type': 'application/json'},
+                    method='POST',
+                )
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    assert resp.status == 200
+
+                # Push live samples including a NaN blink transition mid-session
+                gaze_inputs = [
+                    (True, 0.35, 0.45),
+                    (True, 0.40, 0.46),
+                    (False, float('nan'), float('nan')),
+                    (True, 0.62, 0.51),
+                ]
+                for idx, (valid, gx, gy) in enumerate(gaze_inputs):
+                    t_unix = 1710000500.0 + idx * 0.016
+                    mgr.on_gaze_sample(
+                        t_unix,
+                        GazeSample(
+                            gaze_valid=valid,
+                            gaze_x=gx,
+                            gaze_y=gy,
+                            validity_l=valid,
+                            validity_r=valid,
+                        ),
+                    )
+                    time.sleep(0.015)
+
+                mgr.on_face_sample(
+                    1710000500.05,
+                    FaceSample(
+                        timestamp_us=50_000,
+                        host_unix_sec=1710000500.05,
+                        present=True,
+                        head_yaw_deg=3.5,
+                    ),
+                )
+
+                # Both sinks MUST receive live samples BEFORE /api/session/stop!
+                deadline = time.monotonic() + 3.0
+                while (len(srv1_gaze) < 4 or len(srv2_gaze) < 4) and time.monotonic() < deadline:
+                    time.sleep(0.02)
+
+                assert len(srv1_gaze) == 4
+                assert len(srv2_gaze) == 4
+                assert srv2_gaze[0].gaze_valid is True
+                assert math.isclose(srv2_gaze[0].gaze_x or 0.0, 0.35, abs_tol=1e-4)
+                assert srv2_gaze[2].gaze_valid is False
+                assert srv2_gaze[3].gaze_valid is True
+                assert math.isclose(srv2_gaze[3].gaze_x or 0.0, 0.62, abs_tol=1e-4)
+
+                # Verify both streams (tobii_gaze and tobii_face) arrived on both sinks
+                deadline = time.monotonic() + 2.0
+                while (len(srv1_headers) < 2 or len(srv2_headers) < 2) and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                assert {s for s, _ in srv1_headers} == {STREAM_TOBII_GAZE, STREAM_TOBII_FACE}
+                assert {s for s, _ in srv2_headers} == {STREAM_TOBII_GAZE, STREAM_TOBII_FACE}
+
+                stop_req = urllib.request.Request(
+                    f'{base_url}/api/session/stop',
+                    data=b'{}',
+                    headers={'Content-Type': 'application/json'},
+                    method='POST',
+                )
+                with urllib.request.urlopen(stop_req, timeout=3.0) as stop_resp:
+                    assert stop_resp.status == 200
+
+                mgr.wait_for_uploads(timeout=3.0)
+                backups = sorted(os.listdir(tmp_dir))
+                assert 'TobiiGaze_1710000500_server.brt1.br' in backups
+                assert 'TobiiFace_1710000500_server.brt1.br' in backups
+            finally:
+                mgr.stop()
+    finally:
+        for srv in (rx1, rx2):
+            srv.shutdown()
+            srv.server_close()
+            srv._thread.join(timeout=1.0)  # type: ignore[attr-defined]
+
+
+def test_aux_session_manager_standby_streaming_and_session_handoff() -> None:
+    """Verify local-only standby gaze streaming before heartbeat, dual-sink handoff, and post-stop resume."""
+    extracted = extract_upload_targets(
+        {
+            'upload_targets': [
+                {
+                    'server_address': 'https://brbrdb.brbrkitten.com',
+                    'api_key': 'k',
+                    'max_retries': 10,
+                    'buffer_duration_minutes': 30,
+                },
+                {
+                    'server_address': 'http://127.0.0.1:18922',
+                    'api_key': '',
+                    'max_retries': 10,
+                    'buffer_duration_minutes': 30,
+                },
+            ]
+        }
+    )
+    assert len(extracted) == 2
+    assert extracted[0].max_retries == 10 and extracted[0].buffer_duration_minutes == 30
+    assert extracted[1].max_retries == 0 and extracted[1].buffer_duration_minutes == 0
+
+    remote_headers: List[Tuple[str, Dict[str, Any]]] = []
+    remote_gaze: List[Any] = []
+    local_headers: List[Tuple[str, Dict[str, Any]]] = []
+    local_gaze: List[Any] = []
+
+    rx_remote = _start_brt1_test_rx(remote_headers, remote_gaze)
+    rx_local = _start_brt1_test_rx(local_headers, local_gaze)
+
+    try:
+        remote_url = f'http://127.0.0.1:{rx_remote.server_address[1]}'
+        local_url = f'http://127.0.0.1:{rx_local.server_address[1]}'
+
+        mgr = TobiiAuxSessionManager(
+            host='127.0.0.1',
+            port=0,
+            rollover_interval_sec=30.0,
+            standby_sinks=[
+                parse_sink_spec(local_url),
+                parse_sink_spec('https://brbrdb.invalid'),
+            ],
+        )
+        # Remote standby sinks must be ignored so standby gaze never leaks off-box
+        assert [s.server_address for s in mgr.standby_sinks] == [local_url]
+        mgr.start()
+        try:
+            base_url = f'http://127.0.0.1:{mgr.bound_port}'
+
+            # 1. Standby samples before any rFactor heartbeat -> local sink only
+            for idx, (gx, gy) in enumerate(((0.25, 0.35), (0.30, 0.40))):
+                mgr.on_gaze_sample(
+                    1710000600.0 + idx * 0.016,
+                    GazeSample(
+                        gaze_valid=True,
+                        gaze_x=gx,
+                        gaze_y=gy,
+                        validity_l=True,
+                        validity_r=True,
+                    ),
+                )
+                time.sleep(0.015)
+
+            deadline = time.monotonic() + 3.0
+            while len(local_gaze) < 2 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert len(local_gaze) == 2
+            assert math.isclose(local_gaze[0].gaze_x or 0.0, 0.25, abs_tol=1e-4)
+            assert len(remote_gaze) == 0
+            assert len(remote_headers) == 0
+
+            # 2. Heartbeat lists only remote_url; local standby sink still joins session targets
+            hb_body = json.dumps(
+                {
+                    'session_start_unix_ms': 1710000605_000,
+                    'participant_tag': '',
+                    'metadata': {'Track name': 'Rowrah', 'Driver name': 'Kiber'},
+                    'upload_targets': [
+                        {
+                            'server_address': remote_url,
+                            'api_key': 'key-1',
+                            'max_retries': 2,
+                            'buffer_duration_minutes': 5,
+                        }
+                    ],
+                }
+            ).encode('utf-8')
+            req = urllib.request.Request(
+                f'{base_url}/api/session/heartbeat',
+                data=hb_body,
+                headers={'Content-Type': 'application/json'},
+                method='POST',
+            )
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                assert resp.status == 200
+
+            for idx, (gx, gy) in enumerate(((0.55, 0.45), (0.60, 0.48))):
+                mgr.on_gaze_sample(
+                    1710000605.05 + idx * 0.016,
+                    GazeSample(
+                        gaze_valid=True,
+                        gaze_x=gx,
+                        gaze_y=gy,
+                        validity_l=True,
+                        validity_r=True,
+                    ),
+                )
+                time.sleep(0.015)
+
+            deadline = time.monotonic() + 3.0
+            while (
+                (len(remote_gaze) < 2 or len(local_gaze) < 4)
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.02)
+            assert len(remote_gaze) == 2
+            assert math.isclose(remote_gaze[0].gaze_x or 0.0, 0.55, abs_tol=1e-4)
+            assert len(local_gaze) == 4
+
+            # 3. Stop session -> resumes standby streaming to local sink only
+            stop_req = urllib.request.Request(
+                f'{base_url}/api/session/stop',
+                data=b'{}',
+                headers={'Content-Type': 'application/json'},
+                method='POST',
+            )
+            with urllib.request.urlopen(stop_req, timeout=3.0) as stop_resp:
+                assert stop_resp.status == 200
+
+            mgr.on_gaze_sample(
+                1710000610.0,
+                GazeSample(
+                    gaze_valid=True,
+                    gaze_x=0.72,
+                    gaze_y=0.51,
+                    validity_l=True,
+                    validity_r=True,
+                ),
+            )
+            deadline = time.monotonic() + 3.0
+            while len(local_gaze) < 5 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert len(local_gaze) == 5
+            assert math.isclose(local_gaze[-1].gaze_x or 0.0, 0.72, abs_tol=1e-4)
+            assert len(remote_gaze) == 2
+        finally:
+            mgr.stop()
+    finally:
+        for srv in (rx_remote, rx_local):
+            srv.shutdown()
+            srv.server_close()
+            srv._thread.join(timeout=1.0)  # type: ignore[attr-defined]
+
+
+def test_usb_service_detection_port_takeover_and_gaze_reconnect() -> None:
+    """Verify service check, exclusive port takeover, and <1.5s SSE gaze reconnect after server restart."""
+    from live_feedback.main import LiveFeedbackController
+    from live_feedback.overlay import OverlayStateHub
+    from live_feedback.stream_server import LiveStreamServer
+
+    # 1. Windows service query works without Invalid state= error and filters cleanly
+    real_svcs = get_windows_tobii_services_running()
+    assert isinstance(real_svcs, list)
+    assert set(real_svcs).issubset(set(WINDOWS_TOBII_SERVICES))
+
+    with (
+        patch('tobii.usb_transport.sys.platform', 'win32'),
+        patch(
+            'tobii.usb_transport._is_windows_service_active',
+            side_effect=lambda name: name == WINDOWS_TOBII_SERVICES[0],
+        ),
+    ):
+        assert get_windows_tobii_services_running() == [WINDOWS_TOBII_SERVICES[0]]
+
+    # 2. Exclusive port binding + /api/shutdown takeover on TobiiAuxSessionManager
+    mgr1 = TobiiAuxSessionManager(host='127.0.0.1', port=0)
+    mgr1.start()
+    taken_port = mgr1.bound_port
+    mgr2 = TobiiAuxSessionManager(host='127.0.0.1', port=taken_port)
+    try:
+        mgr2.start()
+        assert mgr2.bound_port == taken_port
+        assert mgr1._running is False
+    finally:
+        mgr2.stop()
+        mgr1.stop()
+
+    # 3. TobiiAuxSessionManager -> LiveStreamServer -> SSE /events across server restart (<1.5s)
+    hub1 = OverlayStateHub()
+    ctrl1 = LiveFeedbackController(server_url='https://example.test', overlay_hub=hub1)
+    srv1 = LiveStreamServer(
+        host='127.0.0.1',
+        port=0,
+        on_header=ctrl1.on_header,
+        on_samples=ctrl1.on_samples,
+        on_gaze_samples=ctrl1.on_gaze_samples,
+        overlay_hub=hub1,
+        status_provider=ctrl1.health_status,
+    )
+    srv1.start()
+    live_port = srv1.bound_port
+
+    mgr = TobiiAuxSessionManager(
+        host='127.0.0.1',
+        port=0,
+        rollover_interval_sec=30.0,
+        standby_sinks=[parse_sink_spec(f'http://127.0.0.1:{live_port}')],
+    )
+    mgr.start()
+    srv2: Optional[LiveStreamServer] = None
+    sse_sock: Optional[socket.socket] = None
+    try:
+        t0 = 1710000700.0
+        deadline = time.monotonic() + 2.0
+        idx = 0
+        while time.monotonic() < deadline:
+            mgr.on_gaze_sample(
+                t0 + idx * 0.02,
+                GazeSample(
+                    gaze_valid=True,
+                    gaze_x=0.42,
+                    gaze_y=0.48,
+                    validity_l=True,
+                    validity_r=True,
+                ),
+            )
+            idx += 1
+            time.sleep(0.02)
+            if ctrl1.health_status()['gaze_valid_received'] >= 2 and mgr.context.standby_connected:
+                break
+
+        assert ctrl1.health_status()['gaze_valid_received'] >= 2
+        assert mgr.context.standby_connected is True
+
+        # Simulate restarting Live Feedback on the same port while Tobii keeps running
+        srv1.stop()
+
+        hub2 = OverlayStateHub()
+        ctrl2 = LiveFeedbackController(server_url='https://example.test', overlay_hub=hub2)
+        srv2 = LiveStreamServer(
+            host='127.0.0.1',
+            port=live_port,
+            on_header=ctrl2.on_header,
+            on_samples=ctrl2.on_samples,
+            on_gaze_samples=ctrl2.on_gaze_samples,
+            overlay_hub=hub2,
+            status_provider=ctrl2.health_status,
+        )
+        srv2.start()
+
+        sse_sock = socket.create_connection(('127.0.0.1', live_port), timeout=2.0)
+        sse_sock.sendall(
+            b'GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n'
+        )
+        sse_sock.settimeout(0.05)
+
+        sse_buf = bytearray()
+        valid_sse_seen = False
+        reconn_deadline = time.monotonic() + 1.5
+        while time.monotonic() < reconn_deadline:
+            mgr.on_gaze_sample(
+                t0 + idx * 0.02,
+                GazeSample(
+                    gaze_valid=True,
+                    gaze_x=0.63,
+                    gaze_y=0.37,
+                    validity_l=True,
+                    validity_r=True,
+                ),
+            )
+            idx += 1
+            time.sleep(0.03)
+            try:
+                chunk = sse_sock.recv(8192)
+                if chunk:
+                    sse_buf.extend(chunk)
+            except socket.timeout:
+                pass
+            for line in sse_buf.decode('utf-8', errors='replace').splitlines():
+                if line.startswith('data: '):
+                    ev = json.loads(line[6:])
+                    if ev.get('type') == 'tick' and ev.get('gaze', {}).get('valid') is True:
+                        valid_sse_seen = True
+                        break
+            if valid_sse_seen and ctrl2.health_status()['gaze_valid_received'] >= 1:
+                break
+
+        assert ctrl2.health_status()['gaze_valid_received'] >= 1
+        assert valid_sse_seen is True
+    finally:
+        if sse_sock is not None:
+            sse_sock.close()
+        mgr.stop()
+        srv1.stop()
+        if srv2 is not None:
+            srv2.stop()

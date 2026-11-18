@@ -6,14 +6,20 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import math
+import queue
+import socket
 from socketserver import ThreadingMixIn
 import struct
+import sys
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 import zlib
 
 import brotli  # type: ignore[import-untyped]
+
+from live_feedback.overlay import OverlayStateHub
+from live_feedback.overlay_static import OVERLAY_HTML
 
 
 CHUNK_MAGIC = 0x01
@@ -35,6 +41,20 @@ class DecodedSample:
     lat: Optional[float]
     lon: Optional[float]
     speed_ms: Optional[float]
+    is_live: bool
+    throttle_pct: Optional[float] = None
+    brake_pct: Optional[float] = None
+    clutch_pct: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class DecodedGazeSample:
+    """Decoded single live gaze sample plus live-ness indicator."""
+
+    time_s: float
+    gaze_x: Optional[float]
+    gaze_y: Optional[float]
+    gaze_valid: bool
     is_live: bool
 
 
@@ -64,10 +84,13 @@ class Brt1IncrementalDecoder:
         self._buf = bytearray()
         self.magic_seen = False
         self.metadata: Optional[Dict[str, Any]] = None
+        self.stream_name: str = ''
         self.channels: List[Dict[str, Any]] = []
         self._scales: List[float] = []
         self._tracked: Optional[List[float]] = None
         self.eos_seen = False
+        self.last_row_count: int = 0
+        self._gaze_samples: List[DecodedGazeSample] = []
 
         self._idx_time: Optional[int] = None
         self._idx_x: Optional[int] = None
@@ -75,6 +98,17 @@ class Brt1IncrementalDecoder:
         self._idx_lat: Optional[int] = None
         self._idx_lon: Optional[int] = None
         self._idx_speed: Optional[int] = None
+        self._idx_throttle: Optional[int] = None
+        self._idx_brake: Optional[int] = None
+        self._idx_clutch: Optional[int] = None
+        self._idx_gaze_x: Optional[int] = None
+        self._idx_gaze_y: Optional[int] = None
+        self._idx_gaze_unfilt_x: Optional[int] = None
+        self._idx_gaze_unfilt_y: Optional[int] = None
+        self._idx_left_gaze_x: Optional[int] = None
+        self._idx_left_gaze_y: Optional[int] = None
+        self._idx_right_gaze_x: Optional[int] = None
+        self._idx_right_gaze_y: Optional[int] = None
 
     def feed(self, data: bytes) -> None:
         """Append uncompressed BRT1 bytes into the parser buffer."""
@@ -85,6 +119,12 @@ class Brt1IncrementalDecoder:
     def buffered_bytes(self) -> int:
         """Return number of unparsed bytes currently queued in the decoder."""
         return len(self._buf)
+
+    def pop_gaze_samples(self) -> List[DecodedGazeSample]:
+        """Return and clear decoded gaze samples collected on `tobii_gaze` streams."""
+        out = list(self._gaze_samples)
+        self._gaze_samples.clear()
+        return out
 
     def _update_channel_indices(self) -> None:
         name_map = {
@@ -97,6 +137,23 @@ class Brt1IncrementalDecoder:
         self._idx_lat = name_map.get('latitude')
         self._idx_lon = name_map.get('longitude')
         self._idx_speed = name_map.get('speed')
+        self._idx_throttle = name_map.get('throttle')
+        self._idx_brake = name_map.get('brake')
+        self._idx_clutch = name_map.get('clutch')
+        self._idx_gaze_x = name_map.get('gaze x')
+        self._idx_gaze_y = name_map.get('gaze y')
+        self._idx_gaze_unfilt_x = name_map.get('gaze unfiltered x')
+        self._idx_gaze_unfilt_y = name_map.get('gaze unfiltered y')
+        self._idx_left_gaze_x = name_map.get('left gaze x')
+        self._idx_left_gaze_y = name_map.get('left gaze y')
+        self._idx_right_gaze_x = name_map.get('right gaze x')
+        self._idx_right_gaze_y = name_map.get('right gaze y')
+
+    def _opt(self, idx: Optional[int]) -> Optional[float]:
+        if self._tracked is None or idx is None or idx >= len(self._tracked):
+            return None
+        val = self._tracked[idx]
+        return val if math.isfinite(val) else None
 
     def _extract_sample(self, is_live: bool) -> Optional[DecodedSample]:
         if self._tracked is None or self._idx_time is None:
@@ -105,19 +162,53 @@ class Brt1IncrementalDecoder:
         if not math.isfinite(t_val):
             return None
 
-        def _opt(idx: Optional[int]) -> Optional[float]:
-            if idx is None or idx >= len(self._tracked):
-                return None
-            val = self._tracked[idx]
-            return val if math.isfinite(val) else None
-
         return DecodedSample(
             time_s=t_val,
-            x=_opt(self._idx_x),
-            z=_opt(self._idx_z),
-            lat=_opt(self._idx_lat),
-            lon=_opt(self._idx_lon),
-            speed_ms=_opt(self._idx_speed),
+            x=self._opt(self._idx_x),
+            z=self._opt(self._idx_z),
+            lat=self._opt(self._idx_lat),
+            lon=self._opt(self._idx_lon),
+            speed_ms=self._opt(self._idx_speed),
+            is_live=is_live,
+            throttle_pct=self._opt(self._idx_throttle),
+            brake_pct=self._opt(self._idx_brake),
+            clutch_pct=self._opt(self._idx_clutch),
+        )
+
+    def _extract_gaze_sample(self, is_live: bool) -> Optional[DecodedGazeSample]:
+        if self._tracked is None or self._idx_time is None:
+            return None
+        t_val = self._tracked[self._idx_time]
+        if not math.isfinite(t_val):
+            return None
+        gx = self._opt(self._idx_gaze_x)
+        gy = self._opt(self._idx_gaze_y)
+        if gx is None or gy is None:
+            gx = self._opt(self._idx_gaze_unfilt_x)
+            gy = self._opt(self._idx_gaze_unfilt_y)
+        if gx is None or gy is None:
+            lx = self._opt(self._idx_left_gaze_x)
+            ly = self._opt(self._idx_left_gaze_y)
+            rx = self._opt(self._idx_right_gaze_x)
+            ry = self._opt(self._idx_right_gaze_y)
+            if (
+                lx is not None
+                and ly is not None
+                and rx is not None
+                and ry is not None
+            ):
+                gx = 0.5 * (lx + rx)
+                gy = 0.5 * (ly + ry)
+            elif lx is not None and ly is not None:
+                gx, gy = lx, ly
+            elif rx is not None and ry is not None:
+                gx, gy = rx, ry
+        valid = gx is not None and gy is not None
+        return DecodedGazeSample(
+            time_s=t_val,
+            gaze_x=gx if valid else None,
+            gaze_y=gy if valid else None,
+            gaze_valid=valid,
             is_live=is_live,
         )
 
@@ -128,6 +219,7 @@ class Brt1IncrementalDecoder:
         """
         new_metadata: Optional[Dict[str, Any]] = None
         samples: List[DecodedSample] = []
+        self.last_row_count = 0
 
         while len(self._buf) >= 3:
             length, chunk_type = struct.unpack_from('<HB', self._buf, 0)
@@ -153,6 +245,7 @@ class Brt1IncrementalDecoder:
                 if not isinstance(meta, dict) or not isinstance(ch_list, list) or not ch_list:
                     raise ValueError('Invalid BRT1 metadata JSON structure.')
                 self.metadata = meta
+                self.stream_name = str(meta.get('stream', '') or '').strip().lower()
                 self.channels = ch_list
                 self._scales = [float(ch['scale']) for ch in ch_list]
                 self._tracked = None
@@ -167,9 +260,15 @@ class Brt1IncrementalDecoder:
                         f'Invalid baseline chunk length {length} (expected {expected}).'
                     )
                 self._tracked = list(struct.unpack(f'<{num_ch}d', payload))
-                sample = self._extract_sample(is_live=not has_backlog)
-                if sample is not None:
-                    samples.append(sample)
+                self.last_row_count += 1
+                if self.stream_name == 'tobii_gaze':
+                    gs = self._extract_gaze_sample(is_live=not has_backlog)
+                    if gs is not None:
+                        self._gaze_samples.append(gs)
+                elif self.stream_name == '':
+                    sample = self._extract_sample(is_live=not has_backlog)
+                    if sample is not None:
+                        samples.append(sample)
 
             elif chunk_type == CHUNK_DELTA:
                 num_ch = len(self._scales)
@@ -192,10 +291,17 @@ class Brt1IncrementalDecoder:
                             self._tracked[c] = q_val * self._scales[c]
                         else:
                             self._tracked[c] += q_val * self._scales[c]
+                    self.last_row_count += 1
                     is_last_row = (r == num_rows - 1)
-                    sample = self._extract_sample(is_live=(not has_backlog and is_last_row))
-                    if sample is not None:
-                        samples.append(sample)
+                    live_flag = not has_backlog and is_last_row
+                    if self.stream_name == 'tobii_gaze':
+                        gs = self._extract_gaze_sample(is_live=live_flag)
+                        if gs is not None:
+                            self._gaze_samples.append(gs)
+                    elif self.stream_name == '':
+                        sample = self._extract_sample(is_live=live_flag)
+                        if sample is not None:
+                            samples.append(sample)
 
             elif chunk_type == CHUNK_EOS:
                 self.eos_seen = True
@@ -300,13 +406,19 @@ def _iter_http_body_chunks(rfile: Any, headers: Any) -> Any:
 
 
 class ChunkedBrt1Handler(BaseHTTPRequestHandler):
-    """HTTP handler receiving `POST /api/upload/stream` and `GET /health`."""
+    """HTTP handler for `POST /api/upload/stream`, `GET /overlay`, `GET /events`, and `/health`."""
 
     protocol_version = 'HTTP/1.1'
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         """Silence default BaseHTTPRequestHandler stderr logging."""
         return
+
+    def _enable_tcp_nodelay(self) -> None:
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
 
     def _send_json(self, status_code: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload).encode('utf-8')
@@ -320,22 +432,103 @@ class ChunkedBrt1Handler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
+    def _send_html(self, html_text: str) -> None:
+        body = html_text.encode('utf-8')
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            pass
+
+    def _serve_sse(self) -> None:
+        srv: LiveStreamServer = self.server  # type: ignore[assignment]
+        hub = srv.overlay_hub
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+
+        if hub is None:
+            init_line = b'data: {"type":"init"}\n\n'
+            try:
+                self.wfile.write(init_line)
+                self.wfile.flush()
+            except OSError:
+                return
+            while not srv.stop_event.wait(0.25):
+                pass
+            return
+
+        client_q, init_payload = hub.register_client()
+        try:
+            self.wfile.write(f'data: {init_payload}\n\n'.encode('utf-8'))
+            self.wfile.flush()
+            while not srv.stop_event.is_set():
+                try:
+                    msg = client_q.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                if msg is None:
+                    break
+                self.wfile.write(f'data: {msg}\n\n'.encode('utf-8'))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            hub.unregister_client(client_q)
+
     def do_GET(self) -> None:
-        """Serve `/health` probe."""
+        """Serve `/health`, `/overlay`, and `/events`."""
+        self._enable_tcp_nodelay()
         path = urlsplit(self.path).path
         if path == '/health':
-            self._send_json(200, {'status': 'ok'})
+            payload: Dict[str, Any] = {'status': 'ok'}
+            provider = getattr(self.server, 'status_provider', None)
+            if callable(provider):
+                try:
+                    extra = provider()
+                    if isinstance(extra, dict):
+                        payload.update(extra)
+                except Exception:
+                    pass
+            self._send_json(200, payload)
+            return
+        if path in ('/overlay', '/overlay/'):
+            self._send_html(OVERLAY_HTML)
+            return
+        if path == '/events':
+            self._serve_sse()
             return
         self._send_json(404, {'error': 'Not found'})
 
     def do_POST(self) -> None:
         """Consume streaming BRT1 telemetry from `/api/upload/stream`."""
+        self._enable_tcp_nodelay()
         path = urlsplit(self.path).path
+        srv: LiveStreamServer = self.server  # type: ignore[assignment]
+        if path == '/api/shutdown':
+            peer_ip = str(self.client_address[0] if self.client_address else '')
+            if peer_ip not in ('127.0.0.1', '::1'):
+                self._send_json(403, {'error': 'Loopback only'})
+                return
+            self._send_json(200, {'status': 'shutting_down'})
+            cb = getattr(self.server, 'on_shutdown_request', None)
+            stop_fn = getattr(self.server, 'stop_server', None)
+            target = cb if callable(cb) else stop_fn
+            if callable(target):
+                threading.Thread(target=target, daemon=True).start()
+            return
         if path != '/api/upload/stream':
             self._send_json(404, {'error': 'Not found'})
             return
 
-        srv: LiveStreamServer = self.server  # type: ignore[assignment]
         api_key = str(self.headers.get('X-API-Key', '')).strip()
         content_encoding = str(self.headers.get('Content-Encoding', ''))
 
@@ -362,12 +555,17 @@ class ChunkedBrt1Handler(BaseHTTPRequestHandler):
                     continue
                 decoder.feed(plain)
                 new_meta, samples, eos = decoder.pop_chunks()
+                gaze_samples = decoder.pop_gaze_samples()
                 if new_meta is not None:
                     session_key = compute_session_key(new_meta)
-                    srv.dispatch_header(session_key, new_meta, decoder.channels, api_key)
-                if samples and session_key is not None:
-                    seen_samples += len(samples)
-                    srv.dispatch_samples(session_key, samples)
+                    if decoder.stream_name == '':
+                        srv.dispatch_header(session_key, new_meta, decoder.channels, api_key)
+                if session_key is not None:
+                    if samples:
+                        srv.dispatch_samples(session_key, samples)
+                    if gaze_samples:
+                        srv.dispatch_gaze_samples(session_key, gaze_samples)
+                seen_samples += decoder.last_row_count
                 if eos:
                     eos_seen = True
 
@@ -376,12 +574,17 @@ class ChunkedBrt1Handler(BaseHTTPRequestHandler):
                 if tail:
                     decoder.feed(tail)
                     new_meta, samples, _ = decoder.pop_chunks()
+                    gaze_samples = decoder.pop_gaze_samples()
                     if new_meta is not None:
                         session_key = compute_session_key(new_meta)
-                        srv.dispatch_header(session_key, new_meta, decoder.channels, api_key)
-                    if samples and session_key is not None:
-                        seen_samples += len(samples)
-                        srv.dispatch_samples(session_key, samples)
+                        if decoder.stream_name == '':
+                            srv.dispatch_header(session_key, new_meta, decoder.channels, api_key)
+                    if session_key is not None:
+                        if samples:
+                            srv.dispatch_samples(session_key, samples)
+                        if gaze_samples:
+                            srv.dispatch_gaze_samples(session_key, gaze_samples)
+                    seen_samples += decoder.last_row_count
         except (BrokenPipeError, ConnectionResetError):
             return
         except EOFError:
@@ -398,11 +601,20 @@ class ChunkedBrt1Handler(BaseHTTPRequestHandler):
 
 class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    allow_reuse_address = sys.platform != 'win32'
+
+    def server_bind(self) -> None:
+        if sys.platform == 'win32':
+            excl = getattr(socket, 'SO_EXCLUSIVEADDRUSE', -5)
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, excl, 1)
+            except OSError:
+                pass
+        super().server_bind()
 
 
 class LiveStreamServer:
-    """Thread-safe local HTTP server forwarding BRT1 headers and samples to callbacks."""
+    """Thread-safe local HTTP server forwarding BRT1 streams and serving OBS overlay."""
 
     def __init__(
         self,
@@ -412,11 +624,19 @@ class LiveStreamServer:
             Callable[[str, Dict[str, Any], List[Dict[str, Any]], str], None]
         ] = None,
         on_samples: Optional[Callable[[str, List[DecodedSample]], None]] = None,
+        on_gaze_samples: Optional[Callable[[str, List[DecodedGazeSample]], None]] = None,
+        overlay_hub: Optional[OverlayStateHub] = None,
+        status_provider: Optional[Callable[[], Dict[str, Any]]] = None,
+        on_shutdown_request: Optional[Callable[[], None]] = None,
     ) -> None:
         self.host = host
         self.requested_port = int(port)
         self._on_header = on_header
         self._on_samples = on_samples
+        self._on_gaze_samples = on_gaze_samples
+        self.overlay_hub = overlay_hub
+        self._status_provider = status_provider
+        self._on_shutdown_request = on_shutdown_request
 
         self.stop_event = threading.Event()
         self._callback_lock = threading.Lock()
@@ -472,6 +692,17 @@ class LiveStreamServer:
         with self._callback_lock:
             self._on_samples(session_key, samples)
 
+    def dispatch_gaze_samples(
+        self,
+        session_key: str,
+        samples: List[DecodedGazeSample],
+    ) -> None:
+        """Invoke `on_gaze_samples` serialized across concurrent connections."""
+        if self._on_gaze_samples is None or not samples:
+            return
+        with self._callback_lock:
+            self._on_gaze_samples(session_key, samples)
+
     def start(self) -> None:
         """Start listening on `host:port` in a background daemon thread."""
         if self._httpd is not None:
@@ -479,10 +710,15 @@ class LiveStreamServer:
         self.stop_event.clear()
         httpd = _ThreadingHTTPServer((self.host, self.requested_port), ChunkedBrt1Handler)
         httpd.stop_event = self.stop_event  # type: ignore[attr-defined]
+        httpd.overlay_hub = self.overlay_hub  # type: ignore[attr-defined]
         httpd.dispatch_header = self.dispatch_header  # type: ignore[attr-defined]
         httpd.dispatch_samples = self.dispatch_samples  # type: ignore[attr-defined]
+        httpd.dispatch_gaze_samples = self.dispatch_gaze_samples  # type: ignore[attr-defined]
         httpd.on_stream_open = self.on_stream_open  # type: ignore[attr-defined]
         httpd.on_stream_close = self.on_stream_close  # type: ignore[attr-defined]
+        httpd.status_provider = self._status_provider  # type: ignore[attr-defined]
+        httpd.on_shutdown_request = self._on_shutdown_request  # type: ignore[attr-defined]
+        httpd.stop_server = self.stop  # type: ignore[attr-defined]
         self._httpd = httpd
         self._thread = threading.Thread(
             target=httpd.serve_forever,
@@ -492,8 +728,10 @@ class LiveStreamServer:
         self._thread.start()
 
     def stop(self) -> None:
-        """Shut down the HTTP server and wait briefly for the listener thread."""
+        """Shut down the HTTP server and close SSE clients cleanly."""
         self.stop_event.set()
+        if self.overlay_hub is not None:
+            self.overlay_hub.close_all_clients()
         httpd = self._httpd
         self._httpd = None
         if httpd is not None:

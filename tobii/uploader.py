@@ -1,16 +1,20 @@
-"""Local CommandSink HTTP server (127.0.0.1:18921) and dual-stream Brotli BRT1 uploader."""
+"""Local CommandSink HTTP server (127.0.0.1:18921) and multi-sink live chunked BRT1 streamer."""
 
+from collections import deque
 from dataclasses import dataclass, field
+import http.client
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 import queue
+import socket
 from socketserver import ThreadingMixIn
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 import urllib.error
+from urllib.parse import urlsplit
 import urllib.request
 
 if __package__ in (None, ''):
@@ -36,9 +40,152 @@ except ImportError:  # pragma: no cover
     brotli = None  # type: ignore
 
 
+DEFAULT_USER_AGENT = 'BrBrDbTelemetry/1.0'
+
+
+@dataclass(frozen=True)
+class UploadSinkConfig:
+    """Configuration for a single HTTP BRT1 upload target."""
+
+    server_address: str
+    api_key: str = ''
+    max_retries: int = 5
+    buffer_duration_minutes: int = 10
+
+    @property
+    def normalized_key(self) -> str:
+        """Return canonical target URL key for deduplication."""
+        return self.server_address.strip().rstrip('/').lower()
+
+
+def is_local_host(host: str) -> bool:
+    """Return True if `host` points to the local machine."""
+    clean = (host or '').strip().lower()
+    return clean in ('127.0.0.1', 'localhost', '::1')
+
+
+def _is_local_address(server_address: str) -> bool:
+    """Return True if `server_address` targets localhost or loopback."""
+    addr = (server_address or '').strip()
+    if not addr:
+        return False
+    parsed = urlsplit(addr if '://' in addr else f'http://{addr}')
+    return is_local_host(parsed.hostname or '')
+
+
+def parse_sink_spec(server_address: str, api_key: str = '') -> UploadSinkConfig:
+    """Create `UploadSinkConfig` with zero-buffering defaults for localhost sinks."""
+    addr = server_address.strip()
+    local = _is_local_address(addr)
+    return UploadSinkConfig(
+        server_address=addr,
+        api_key=api_key.strip(),
+        max_retries=0 if local else 5,
+        buffer_duration_minutes=0 if local else 10,
+    )
+
+
+def extract_upload_targets(
+    payload: Dict[str, Any],
+    extra_sinks: Sequence[UploadSinkConfig] = (),
+) -> List[UploadSinkConfig]:
+    """Extract and deduplicate HTTP upload targets from a CommandSink heartbeat payload."""
+    targets: List[UploadSinkConfig] = []
+    seen: set[str] = set()
+
+    def _add(cfg: UploadSinkConfig) -> None:
+        key = cfg.normalized_key
+        if not key or key in seen:
+            return
+        seen.add(key)
+        targets.append(cfg)
+
+    raw_list = payload.get('upload_targets')
+    if isinstance(raw_list, list) and raw_list:
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            addr = str(item.get('server_address') or '').strip()
+            if not addr:
+                continue
+            api_key = str(item.get('api_key') or '').strip()
+            local = _is_local_address(addr)
+            raw_retries = item.get('max_retries')
+            raw_buf = item.get('buffer_duration_minutes')
+            if local:
+                max_retries = 0
+                buf_min = 0
+            else:
+                max_retries = (
+                    int(raw_retries) if raw_retries is not None else 5
+                )
+                buf_min = int(raw_buf) if raw_buf is not None else 10
+            _add(
+                UploadSinkConfig(
+                    server_address=addr,
+                    api_key=api_key,
+                    max_retries=max(0, max_retries),
+                    buffer_duration_minutes=max(0, buf_min),
+                )
+            )
+
+    if not targets:
+        raw_single = payload.get('upload_target')
+        if isinstance(raw_single, dict):
+            addr = str(raw_single.get('server_address') or '').strip()
+            api_key = str(raw_single.get('api_key') or '').strip()
+            if addr:
+                _add(parse_sink_spec(addr, api_key))
+
+    for extra in extra_sinks:
+        if extra.server_address.strip():
+            _add(extra)
+
+    return targets
+
+
 class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    allow_reuse_address = sys.platform != 'win32'
+
+    def server_bind(self) -> None:
+        if sys.platform == 'win32':
+            excl = getattr(socket, 'SO_EXCLUSIVEADDRUSE', -5)
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, excl, 1)
+            except OSError:
+                pass
+        super().server_bind()
+
+
+def _probe_local_tobii_status(port: int) -> bool:
+    """Return True if an existing Tobii AUX server responds on `127.0.0.1:port`."""
+    try:
+        with urllib.request.urlopen(
+            f'http://127.0.0.1:{int(port)}/api/session/status',
+            timeout=0.5,
+        ) as resp:
+            if int(resp.status) != 200:
+                return False
+            data = json.loads(resp.read().decode('utf-8'))
+            return isinstance(data, dict) and 'gaze_samples_recorded' in data
+    except Exception:
+        return False
+
+
+def _request_local_tobii_shutdown(port: int) -> bool:
+    """Request an existing loopback Tobii AUX server to shut down cleanly."""
+    req = urllib.request.Request(
+        f'http://127.0.0.1:{int(port)}/api/shutdown',
+        data=b'{}',
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=0.8) as resp:
+            return int(resp.status) == 200
+    except Exception:
+        return False
 
 
 class StreamingBrotliCompressor:
@@ -146,6 +293,347 @@ class BrotliBrt1Segment:
         return bytes(self._compressed_buf)
 
 
+class _RetryBackoff:
+    """Exponential reconnect backoff matching C++ HttpSink."""
+
+    def __init__(
+        self,
+        window_sec: float = 600.0,
+        max_attempts: int = 8,
+        base_delay_sec: float = 1.0,
+    ) -> None:
+        self._window_sec = float(window_sec)
+        self._max_attempts = max(1, int(max_attempts))
+        self._base_delay_sec = max(0.05, float(base_delay_sec))
+        self._attempts: List[float] = []
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self._window_sec
+        while self._attempts and self._attempts[0] < cutoff:
+            self._attempts.pop(0)
+
+    def can_attempt(self, now: float) -> bool:
+        self._prune(now)
+        if not self._attempts:
+            return True
+        n = min(len(self._attempts), self._max_attempts)
+        delay = self._base_delay_sec * float(1 << n)
+        return (now - self._attempts[-1]) >= delay
+
+    def record_attempt(self, now: float) -> None:
+        self._prune(now)
+        self._attempts.append(now)
+
+    def reset(self) -> None:
+        self._attempts.clear()
+
+
+class Brt1HttpStreamWorker:
+    """Dedicated worker thread streaming live chunked BRT1 bytes to a single HTTP sink."""
+
+    def __init__(
+        self,
+        sink: UploadSinkConfig,
+        metadata: Dict[str, Any],
+        channels: Sequence[Dict[str, Any]],
+        stream_name: str,
+        baseline_interval_samples: int = 450,
+        rollover_interval_sec: float = 60.0,
+        on_stats: Optional[Callable[[int, int, str], None]] = None,
+    ) -> None:
+        self.sink = sink
+        self.metadata = dict(metadata)
+        self.channels = [dict(ch) for ch in channels]
+        self.scales = [float(ch['scale']) for ch in self.channels]
+        self.stream_name = stream_name
+        self.baseline_interval_samples = max(1, int(baseline_interval_samples))
+        self.rollover_interval_sec = max(0.2, float(rollover_interval_sec))
+        self._on_stats = on_stats
+
+        self._cond = threading.Condition()
+        pending_cap = 256 if sink.buffer_duration_minutes <= 0 else None
+        self._pending: Deque[Tuple[float, Tuple[float, ...]]] = deque(maxlen=pending_cap)
+        self._replay: Deque[Tuple[float, Tuple[float, ...]]] = deque()
+        self._buffer_sec = max(0.0, float(sink.buffer_duration_minutes) * 60.0)
+        self._stop_requested = False
+
+        self._conn: Optional[http.client.HTTPConnection] = None
+        self._is_connected = False
+        self._connected_mono = 0.0
+        self._backoff = _RetryBackoff(
+            window_sec=600.0,
+            max_attempts=2 if sink.buffer_duration_minutes <= 0 else 4,
+            base_delay_sec=0.15 if sink.buffer_duration_minutes <= 0 else 1.0,
+        )
+        self._has_baseline = False
+        self._samples_since_baseline = 0
+        self._tracked: List[float] = [0.0 for _ in self.channels]
+        self._samples_sent_on_conn = 0
+
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f'Brt1Stream-{stream_name}',
+            daemon=True,
+        )
+        self._thread.start()
+
+    @property
+    def is_connected(self) -> bool:
+        """Return True while an active HTTP upload connection is open."""
+        return self._is_connected
+
+    def push_sample(self, mono_ts: float, row: Sequence[float]) -> None:
+        """Enqueue a telemetry sample for immediate live streaming."""
+        row_t = tuple(float(v) for v in row)
+        with self._cond:
+            if self._stop_requested:
+                return
+            self._pending.append((float(mono_ts), row_t))
+            self._cond.notify()
+
+    def close(self, timeout: float = 5.0) -> None:
+        """Signal shutdown, flush/finalize stream, and join the worker thread."""
+        with self._cond:
+            self._stop_requested = True
+            self._cond.notify_all()
+        effective_timeout = 0.8 if self.sink.max_retries <= 0 else max(0.5, float(timeout))
+        self._thread.join(timeout=effective_timeout)
+
+    def _report_stats(self, seg_inc: int, bytes_inc: int, err: str) -> None:
+        if self._on_stats is not None:
+            self._on_stats(seg_inc, bytes_inc, err)
+
+    def _reset_encoder(self) -> None:
+        self._has_baseline = False
+        self._samples_since_baseline = 0
+        self._tracked = [0.0 for _ in self.channels]
+
+    def _encode_batch(self, rows: Sequence[Tuple[float, ...]]) -> bytes:
+        out = bytearray()
+        delta_run: List[Tuple[float, ...]] = []
+        run_tracked = list(self._tracked)
+
+        def _flush_run() -> None:
+            nonlocal run_tracked
+            if not delta_run:
+                return
+            chunk_bytes, _ = encode_delta_batch_chunk(delta_run, self._tracked, self.scales)
+            out.extend(chunk_bytes)
+            delta_run.clear()
+            run_tracked = list(self._tracked)
+
+        for row in rows:
+            if (
+                not self._has_baseline
+                or self._samples_since_baseline >= self.baseline_interval_samples
+            ):
+                _flush_run()
+                out.extend(encode_baseline_chunk(row))
+                self._tracked = list(row)
+                run_tracked = list(row)
+                self._has_baseline = True
+                self._samples_since_baseline = 1
+                continue
+
+            probe = list(run_tracked)
+            _, needs_base = encode_delta_batch_chunk([row], probe, self.scales)
+            if needs_base:
+                _flush_run()
+                out.extend(encode_baseline_chunk(row))
+                self._tracked = list(row)
+                run_tracked = list(row)
+                self._has_baseline = True
+                self._samples_since_baseline = 1
+            else:
+                delta_run.append(row)
+                run_tracked = probe
+                self._samples_since_baseline += 1
+
+        _flush_run()
+        return bytes(out)
+
+    def _parse_endpoint(self) -> Tuple[str, str, int, str]:
+        addr = self.sink.server_address.strip()
+        parsed = urlsplit(addr if '://' in addr else f'http://{addr}')
+        scheme = (parsed.scheme or 'http').lower()
+        host = parsed.hostname or '127.0.0.1'
+        port = parsed.port or (443 if scheme == 'https' else 80)
+        path = parsed.path or ''
+        if path in ('', '/'):
+            path = '/api/upload/stream'
+        elif not path.endswith('/api/upload/stream'):
+            path = path.rstrip('/') + '/api/upload/stream'
+        if parsed.query:
+            path = f'{path}?{parsed.query}'
+        return scheme, host, int(port), path
+
+    def _connect(self) -> bool:
+        self._disconnect()
+        try:
+            scheme, host, port, path = self._parse_endpoint()
+            timeout_s = 1.5 if is_local_host(host) else 10.0
+            if scheme == 'https':
+                conn: http.client.HTTPConnection = http.client.HTTPSConnection(
+                    host, port, timeout=timeout_s
+                )
+            else:
+                conn = http.client.HTTPConnection(host, port, timeout=timeout_s)
+            conn.connect()
+            if conn.sock is not None:
+                try:
+                    conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except OSError:
+                    pass
+
+            conn.putrequest('POST', path)
+            conn.putheader('Content-Type', 'application/octet-stream')
+            conn.putheader('Transfer-Encoding', 'chunked')
+            conn.putheader('User-Agent', DEFAULT_USER_AGENT)
+            if self.sink.api_key:
+                conn.putheader('X-API-Key', self.sink.api_key)
+            conn.endheaders()
+
+            self._conn = conn
+            self._connected_mono = time.monotonic()
+            self._samples_sent_on_conn = 0
+            self._reset_encoder()
+
+            header_bytes = encode_magic_chunk() + encode_metadata_chunk(
+                self.metadata,
+                channels=self.channels,
+                stream_name=self.stream_name,
+            )
+            self._write_http_chunk(header_bytes)
+            self._is_connected = True
+            return True
+        except Exception as exc:
+            self._disconnect()
+            if self.sink.max_retries > 0:
+                self._report_stats(0, 0, str(exc))
+            return False
+
+    def _disconnect(self) -> None:
+        self._is_connected = False
+        conn = self._conn
+        self._conn = None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _write_http_chunk(self, payload: bytes) -> None:
+        if not payload:
+            return
+        if self._conn is None:
+            raise OSError('Not connected')
+        frame = f'{len(payload):x}\r\n'.encode('ascii') + payload + b'\r\n'
+        self._conn.send(frame)
+        self._report_stats(0, len(payload), '')
+
+    def _finalize(self) -> bool:
+        if self._conn is None:
+            return False
+        ok = False
+        try:
+            eos = encode_eos_chunk()
+            frame = f'{len(eos):x}\r\n'.encode('ascii') + eos + b'\r\n0\r\n\r\n'
+            self._conn.send(frame)
+            resp = self._conn.getresponse()
+            resp.read()
+            if 200 <= resp.status < 300:
+                ok = True
+                self._report_stats(1, len(eos), '')
+            else:
+                if self.sink.max_retries > 0:
+                    self._report_stats(0, 0, f'HTTP {resp.status} {resp.reason}')
+        except Exception as exc:
+            if self.sink.max_retries > 0:
+                self._report_stats(0, 0, str(exc))
+        finally:
+            self._disconnect()
+        return ok
+
+    def _prune_replay(self, now_mono: float) -> None:
+        if self._buffer_sec <= 0.0:
+            self._replay.clear()
+            return
+        cutoff = now_mono - self._buffer_sec
+        while self._replay and self._replay[0][0] < cutoff:
+            self._replay.popleft()
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                while not self._pending and not self._stop_requested:
+                    self._cond.wait(timeout=0.5)
+                stop_now = self._stop_requested
+                batch: List[Tuple[float, Tuple[float, ...]]] = []
+                while self._pending:
+                    batch.append(self._pending.popleft())
+
+            now_mono = time.monotonic()
+            if batch and self._buffer_sec > 0.0:
+                self._replay.extend(batch)
+                self._prune_replay(now_mono)
+
+            if self._conn is not None and self._samples_sent_on_conn > 0:
+                if (now_mono - self._connected_mono) >= self.rollover_interval_sec:
+                    if self._finalize():
+                        self._replay.clear()
+
+            if self._conn is None and (batch or (self._replay and not stop_now)):
+                if self._backoff.can_attempt(now_mono):
+                    self._backoff.record_attempt(now_mono)
+                    if self._connect():
+                        self._backoff.reset()
+                        replay_rows = (
+                            [r for _, r in self._replay]
+                            if self._buffer_sec > 0.0
+                            else [r for _, r in batch]
+                        )
+                        if replay_rows:
+                            try:
+                                encoded = self._encode_batch(replay_rows)
+                                self._write_http_chunk(encoded)
+                                self._samples_sent_on_conn += len(replay_rows)
+                                batch = []
+                            except Exception:
+                                self._disconnect()
+
+            if self._conn is not None and batch:
+                rows = [r for _, r in batch]
+                try:
+                    encoded = self._encode_batch(rows)
+                    self._write_http_chunk(encoded)
+                    self._samples_sent_on_conn += len(rows)
+                except Exception:
+                    self._disconnect()
+
+            if stop_now:
+                break
+
+        if self._conn is not None:
+            if self._finalize():
+                self._replay.clear()
+                return
+
+        if self._replay and self.sink.max_retries > 0:
+            for attempt in range(1, self.sink.max_retries + 1):
+                if self._connect():
+                    try:
+                        encoded = self._encode_batch([r for _, r in self._replay])
+                        self._write_http_chunk(encoded)
+                        if self._finalize():
+                            self._replay.clear()
+                            return
+                    except Exception:
+                        self._disconnect()
+                if attempt < self.sink.max_retries:
+                    time.sleep(min(float(1 << attempt), 16.0))
+        self._disconnect()
+
+
 @dataclass
 class SessionContext:
     """Tracks the active racing session signalled by CommandSink."""
@@ -156,16 +644,19 @@ class SessionContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
     server_address: str = 'https://brbrdb.brbrkitten.com'
     api_key: str = ''
+    upload_targets: List[UploadSinkConfig] = field(default_factory=list)
     last_heartbeat_mono: float = 0.0
     gaze_samples_recorded: int = 0
     face_samples_recorded: int = 0
     segments_uploaded: int = 0
     bytes_uploaded: int = 0
     last_upload_error: str = ''
+    standby_gaze_pushed: int = 0
+    standby_connected: bool = False
 
 
 @dataclass
-class _UploadJob:
+class _BackupJob:
     segment: BrotliBrt1Segment
     server_address: str
     api_key: str
@@ -173,8 +664,15 @@ class _UploadJob:
     tag: str
 
 
+@dataclass
+class _StreamWorkerPair:
+    sink: UploadSinkConfig
+    gaze: Brt1HttpStreamWorker
+    face: Brt1HttpStreamWorker
+
+
 class TobiiAuxSessionManager:
-    """Coordinates CommandSink session lifecycle and dual (`tobii_gaze`, `tobii_face`) uploads."""
+    """Coordinates CommandSink session lifecycle and multi-sink live BRT1 streaming."""
 
     def __init__(
         self,
@@ -183,28 +681,42 @@ class TobiiAuxSessionManager:
         session_timeout_sec: float = 10.0,
         rollover_interval_sec: float = 60.0,
         backup_dir: Optional[str] = None,
+        extra_sinks: Optional[Sequence[UploadSinkConfig]] = None,
+        standby_sinks: Optional[Sequence[UploadSinkConfig]] = None,
         on_session_start: Optional[Callable[[float, Dict[str, Any]], None]] = None,
         on_session_stop: Optional[Callable[[], None]] = None,
         upload_sender: Optional[Callable[[str, str, bytes], Tuple[int, str]]] = None,
+        on_shutdown_request: Optional[Callable[[], None]] = None,
     ) -> None:
         self.host = host
         self.port = int(port)
         self.session_timeout_sec = float(session_timeout_sec)
         self.rollover_interval_sec = float(rollover_interval_sec)
         self.backup_dir = backup_dir
+        self.extra_sinks = list(extra_sinks or ())
+        self.standby_sinks: List[UploadSinkConfig] = [
+            parse_sink_spec(s.server_address, s.api_key)
+            for s in (standby_sinks or ())
+            if _is_local_address(s.server_address)
+        ]
         self._on_session_start = on_session_start
         self._on_session_stop = on_session_stop
-        self._upload_sender = upload_sender or self._default_http_upload
+        self._upload_sender = upload_sender
+        self._on_shutdown_request = on_shutdown_request
 
         self._lock = threading.Lock()
+        self._stop_lock = threading.Lock()
         self._ctx = SessionContext()
+        self._stream_workers: List[_StreamWorkerPair] = []
+        self._standby_gaze_workers: List[Brt1HttpStreamWorker] = []
+        self._standby_start_sec: Optional[float] = None
         self._gaze_segment: Optional[BrotliBrt1Segment] = None
         self._face_segment: Optional[BrotliBrt1Segment] = None
         self._gaze_seg_idx = 0
         self._face_seg_idx = 0
 
-        self._upload_queue: 'queue.Queue[Optional[_UploadJob]]' = queue.Queue()
-        self._upload_thread: Optional[threading.Thread] = None
+        self._backup_queue: 'queue.Queue[Optional[_BackupJob]]' = queue.Queue()
+        self._backup_thread: Optional[threading.Thread] = None
         self._server: Optional[_ThreadingHTTPServer] = None
         self._server_thread: Optional[threading.Thread] = None
         self._watchdog_thread: Optional[threading.Thread] = None
@@ -221,12 +733,17 @@ class TobiiAuxSessionManager:
                 metadata=dict(self._ctx.metadata),
                 server_address=self._ctx.server_address,
                 api_key=self._ctx.api_key,
+                upload_targets=list(self._ctx.upload_targets),
                 last_heartbeat_mono=self._ctx.last_heartbeat_mono,
                 gaze_samples_recorded=self._ctx.gaze_samples_recorded,
                 face_samples_recorded=self._ctx.face_samples_recorded,
                 segments_uploaded=self._ctx.segments_uploaded,
                 bytes_uploaded=self._ctx.bytes_uploaded,
                 last_upload_error=self._ctx.last_upload_error,
+                standby_gaze_pushed=self._ctx.standby_gaze_pushed,
+                standby_connected=any(
+                    w.is_connected for w in self._standby_gaze_workers
+                ),
             )
 
     @property
@@ -237,13 +754,24 @@ class TobiiAuxSessionManager:
         return self.port
 
     def start(self) -> None:
-        """Start the local HTTP listener, watchdog thread, and async upload worker."""
+        """Start the local HTTP listener, watchdog thread, and backup/legacy upload worker."""
         if self._running:
             return
         manager = self
 
         class _Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802
+                req_path = urlsplit(self.path).path
+                if req_path == '/api/shutdown':
+                    peer_ip = str(self.client_address[0] if self.client_address else '')
+                    if peer_ip not in ('127.0.0.1', '::1'):
+                        self._send_json(403, {'status': 'error', 'message': 'Loopback only'})
+                        return
+                    self._send_json(200, {'status': 'ok', 'shutting_down': True})
+                    cb = manager._on_shutdown_request
+                    target = cb if callable(cb) else manager.stop
+                    threading.Thread(target=target, daemon=True).start()
+                    return
                 length = int(self.headers.get('Content-Length', '0'))
                 raw_body = self.rfile.read(length) if length > 0 else b'{}'
                 try:
@@ -252,17 +780,17 @@ class TobiiAuxSessionManager:
                     self._send_json(400, {'status': 'error', 'message': str(exc)})
                     return
 
-                if self.path == '/api/session/heartbeat':
+                if req_path == '/api/session/heartbeat':
                     manager.handle_heartbeat(payload)
                     self._send_json(200, {'status': 'ok', 'active': True})
-                elif self.path == '/api/session/stop':
+                elif req_path == '/api/session/stop':
                     manager.handle_stop(payload)
                     self._send_json(200, {'status': 'ok', 'active': False})
                 else:
                     self._send_json(404, {'status': 'error', 'message': 'Not found'})
 
             def do_GET(self) -> None:  # noqa: N802
-                if self.path == '/api/session/status':
+                if urlsplit(self.path).path == '/api/session/status':
                     ctx = manager.context
                     self._send_json(
                         200,
@@ -272,11 +800,16 @@ class TobiiAuxSessionManager:
                             'session_start_unix_ms': ctx.session_start_unix_ms,
                             'participant_tag': ctx.participant_tag,
                             'metadata': ctx.metadata,
+                            'upload_targets': [
+                                t.server_address for t in ctx.upload_targets
+                            ],
                             'gaze_samples_recorded': ctx.gaze_samples_recorded,
                             'face_samples_recorded': ctx.face_samples_recorded,
                             'segments_uploaded': ctx.segments_uploaded,
                             'bytes_uploaded': ctx.bytes_uploaded,
                             'last_upload_error': ctx.last_upload_error,
+                            'standby_gaze_pushed': ctx.standby_gaze_pushed,
+                            'standby_connected': ctx.standby_connected,
                         },
                     )
                 else:
@@ -293,10 +826,28 @@ class TobiiAuxSessionManager:
             def log_message(self, format_str: str, *args: Any) -> None:
                 return
 
-        self._server = _ThreadingHTTPServer((self.host, self.port), _Handler)
+        try:
+            self._server = _ThreadingHTTPServer((self.host, self.port), _Handler)
+        except OSError:
+            if (
+                self.port > 0
+                and _probe_local_tobii_status(self.port)
+                and _request_local_tobii_shutdown(self.port)
+            ):
+                deadline = time.monotonic() + 1.5
+                while True:
+                    time.sleep(0.15)
+                    try:
+                        self._server = _ThreadingHTTPServer((self.host, self.port), _Handler)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise
+            else:
+                raise
         self._running = True
-        self._upload_thread = threading.Thread(target=self._upload_worker_loop, daemon=True)
-        self._upload_thread.start()
+        self._backup_thread = threading.Thread(target=self._backup_worker_loop, daemon=True)
+        self._backup_thread.start()
         self._server_thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._server_thread.start()
         self._watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True)
@@ -304,30 +855,53 @@ class TobiiAuxSessionManager:
 
     def stop(self) -> None:
         """Stop HTTP server, finalize active streams, and drain pending uploads."""
-        self._running = False
-        self.handle_stop({})
-        if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()
+        with self._stop_lock:
+            self._running = False
+            self.handle_stop({})
+            with self._lock:
+                standby_to_close = list(self._standby_gaze_workers)
+                self._standby_gaze_workers.clear()
+                self._standby_start_sec = None
+            for worker in standby_to_close:
+                worker.close()
+            srv = self._server
             self._server = None
-        if self._server_thread is not None:
-            self._server_thread.join(timeout=1.5)
-            self._server_thread = None
-        if self._watchdog_thread is not None:
-            self._watchdog_thread.join(timeout=1.5)
-            self._watchdog_thread = None
-        if self._upload_thread is not None:
-            self._upload_queue.put(None)
-            self._upload_thread.join(timeout=5.0)
-            self._upload_thread = None
+            if srv is not None:
+                srv.shutdown()
+                srv.server_close()
+            if self._server_thread is not None:
+                self._server_thread.join(timeout=1.5)
+                self._server_thread = None
+            if self._watchdog_thread is not None:
+                self._watchdog_thread.join(timeout=1.5)
+                self._watchdog_thread = None
+            if self._backup_thread is not None:
+                self._backup_queue.put(None)
+                self._backup_thread.join(timeout=5.0)
+                self._backup_thread = None
 
     def wait_for_uploads(self, timeout: float = 5.0) -> None:
-        """Block until all queued segment uploads have completed (up to `timeout` seconds)."""
+        """Block until all queued segment backups/uploads have completed."""
         deadline = time.monotonic() + max(0.05, float(timeout))
         while time.monotonic() < deadline:
-            if self._upload_queue.unfinished_tasks == 0:
-                return
+            if self._backup_queue.unfinished_tasks == 0:
+                with self._lock:
+                    workers_alive = bool(self._stream_workers)
+                if not workers_alive:
+                    return
             time.sleep(0.01)
+
+    def _on_worker_stats(self, seg_inc: int, bytes_inc: int, err: str) -> None:
+        with self._lock:
+            self._ctx.segments_uploaded += int(seg_inc)
+            self._ctx.bytes_uploaded += int(bytes_inc)
+            if err:
+                self._ctx.last_upload_error = err
+            elif seg_inc > 0:
+                self._ctx.last_upload_error = ''
+
+    def _needs_segment_recorder(self) -> bool:
+        return bool(self.backup_dir) or (self._upload_sender is not None)
 
     def _new_gaze_segment(self, meta: Dict[str, Any], seg_idx: int) -> BrotliBrt1Segment:
         return BrotliBrt1Segment(
@@ -347,19 +921,83 @@ class TobiiAuxSessionManager:
             baseline_interval_samples=150,
         )
 
+    def _create_workers(
+        self,
+        targets: Sequence[UploadSinkConfig],
+        meta: Dict[str, Any],
+    ) -> List[_StreamWorkerPair]:
+        if self._upload_sender is not None:
+            return []
+        pairs: List[_StreamWorkerPair] = []
+        for sink in targets:
+            gaze_w = Brt1HttpStreamWorker(
+                sink=sink,
+                metadata=meta,
+                channels=TOBII_GAZE_CHANNELS,
+                stream_name=STREAM_TOBII_GAZE,
+                baseline_interval_samples=450,
+                rollover_interval_sec=self.rollover_interval_sec,
+                on_stats=self._on_worker_stats,
+            )
+            face_w = Brt1HttpStreamWorker(
+                sink=sink,
+                metadata=meta,
+                channels=TOBII_FACE_CHANNELS,
+                stream_name=STREAM_TOBII_FACE,
+                baseline_interval_samples=150,
+                rollover_interval_sec=self.rollover_interval_sec,
+                on_stats=self._on_worker_stats,
+            )
+            pairs.append(_StreamWorkerPair(sink=sink, gaze=gaze_w, face=face_w))
+        return pairs
+
+    def _close_workers(self, pairs: Sequence[_StreamWorkerPair]) -> None:
+        for pair in pairs:
+            pair.gaze.close()
+            pair.face.close()
+
+    def _create_standby_workers(self) -> List[Brt1HttpStreamWorker]:
+        if self._upload_sender is not None or not self.standby_sinks:
+            return []
+        meta = {'standby': True}
+        workers: List[Brt1HttpStreamWorker] = []
+        for sink in self.standby_sinks:
+            workers.append(
+                Brt1HttpStreamWorker(
+                    sink=sink,
+                    metadata=meta,
+                    channels=TOBII_GAZE_CHANNELS,
+                    stream_name=STREAM_TOBII_GAZE,
+                    baseline_interval_samples=450,
+                    rollover_interval_sec=self.rollover_interval_sec,
+                    on_stats=None,
+                )
+            )
+        return workers
+
     def handle_heartbeat(self, payload: Dict[str, Any]) -> None:
         """Process a `/api/session/heartbeat` signal from `CommandSink`."""
         start_ms = int(payload.get('session_start_unix_ms') or int(time.time() * 1000))
         tag = str(payload.get('participant_tag') or '')
         meta = dict(payload.get('metadata') or {})
-        target = dict(payload.get('upload_target') or {})
-        server_addr = str(target.get('server_address') or 'https://brbrdb.brbrkitten.com')
-        api_key = str(target.get('api_key') or '')
+        targets = extract_upload_targets(
+            payload, [*self.extra_sinks, *self.standby_sinks]
+        )
+        if not targets and not self._needs_segment_recorder():
+            targets = [parse_sink_spec('https://brbrdb.brbrkitten.com')]
+
+        primary_addr = targets[0].server_address if targets else ''
+        primary_key = targets[0].api_key if targets else ''
 
         new_session = False
-        jobs_to_enqueue: List[_UploadJob] = []
+        jobs_to_enqueue: List[_BackupJob] = []
+        old_workers: List[_StreamWorkerPair] = []
+        standby_to_close: List[Brt1HttpStreamWorker] = []
 
         with self._lock:
+            standby_to_close = list(self._standby_gaze_workers)
+            self._standby_gaze_workers.clear()
+            self._standby_start_sec = None
             now_mono = time.monotonic()
             if (
                 not self._ctx.active
@@ -367,10 +1005,12 @@ class TobiiAuxSessionManager:
                 or self._ctx.participant_tag != tag
             ):
                 if self._ctx.active:
+                    old_workers = list(self._stream_workers)
+                    self._stream_workers.clear()
                     for seg in (self._gaze_segment, self._face_segment):
                         if seg is not None and seg.samples_count > 0:
                             jobs_to_enqueue.append(
-                                _UploadJob(
+                                _BackupJob(
                                     segment=seg,
                                     server_address=self._ctx.server_address,
                                     api_key=self._ctx.api_key,
@@ -383,25 +1023,42 @@ class TobiiAuxSessionManager:
                 self._ctx.session_start_unix_ms = start_ms
                 self._ctx.participant_tag = tag
                 self._ctx.metadata = meta
-                self._ctx.server_address = server_addr
-                self._ctx.api_key = api_key
+                self._ctx.server_address = primary_addr
+                self._ctx.api_key = primary_key
+                self._ctx.upload_targets = list(targets)
                 self._ctx.last_heartbeat_mono = now_mono
                 self._ctx.gaze_samples_recorded = 0
                 self._ctx.face_samples_recorded = 0
                 self._gaze_seg_idx = 0
                 self._face_seg_idx = 0
-                self._gaze_segment = self._new_gaze_segment(meta, 0)
-                self._face_segment = self._new_face_segment(meta, 0)
+
+                if self._needs_segment_recorder():
+                    self._gaze_segment = self._new_gaze_segment(meta, 0)
+                    self._face_segment = self._new_face_segment(meta, 0)
+                else:
+                    self._gaze_segment = None
+                    self._face_segment = None
+
+                self._stream_workers = self._create_workers(targets, meta)
                 new_session = True
             else:
                 self._ctx.last_heartbeat_mono = now_mono
                 if meta:
                     self._ctx.metadata = meta
-                if server_addr:
-                    self._ctx.server_address = server_addr
-                if api_key:
-                    self._ctx.api_key = api_key
+                if targets:
+                    old_keys = [t.normalized_key for t in self._ctx.upload_targets]
+                    new_keys = [t.normalized_key for t in targets]
+                    if old_keys != new_keys:
+                        old_workers = list(self._stream_workers)
+                        self._stream_workers = self._create_workers(targets, self._ctx.metadata)
+                    self._ctx.upload_targets = list(targets)
+                    self._ctx.server_address = primary_addr
+                    self._ctx.api_key = primary_key
 
+        if old_workers:
+            self._close_workers(old_workers)
+        for worker in standby_to_close:
+            worker.close()
         for job in jobs_to_enqueue:
             self._enqueue_job(job)
 
@@ -409,18 +1066,21 @@ class TobiiAuxSessionManager:
             self._on_session_start(start_ms / 1000.0, meta)
 
     def handle_stop(self, payload: Optional[Dict[str, Any]] = None) -> None:
-        """Process a `/api/session/stop` signal or watchdog timeout and finalize uploads."""
-        jobs_to_enqueue: List[_UploadJob] = []
+        """Process a `/api/session/stop` signal or watchdog timeout and finalize streams."""
+        jobs_to_enqueue: List[_BackupJob] = []
+        workers_to_close: List[_StreamWorkerPair] = []
         was_active = False
 
         with self._lock:
             if self._ctx.active:
                 was_active = True
                 self._ctx.active = False
+                workers_to_close = list(self._stream_workers)
+                self._stream_workers.clear()
                 for seg in (self._gaze_segment, self._face_segment):
                     if seg is not None and seg.samples_count > 0:
                         jobs_to_enqueue.append(
-                            _UploadJob(
+                            _BackupJob(
                                 segment=seg,
                                 server_address=self._ctx.server_address,
                                 api_key=self._ctx.api_key,
@@ -431,6 +1091,8 @@ class TobiiAuxSessionManager:
                 self._gaze_segment = None
                 self._face_segment = None
 
+        if workers_to_close:
+            self._close_workers(workers_to_close)
         for job in jobs_to_enqueue:
             self._enqueue_job(job)
 
@@ -438,84 +1100,112 @@ class TobiiAuxSessionManager:
             self._on_session_stop()
 
     def on_gaze_sample(self, sample_unix_sec: float, sample: GazeSample) -> None:
-        """Append a `0x0500` hardware `GazeSample` to the active `tobii_gaze` segment."""
-        job: Optional[_UploadJob] = None
+        """Stream a `0x0500` hardware `GazeSample` live and record local backup if enabled."""
+        job: Optional[_BackupJob] = None
 
         with self._lock:
-            if not self._ctx.active or self._gaze_segment is None:
+            now_mono = time.monotonic()
+            if not self._ctx.active:
+                if (
+                    not self._running
+                    or not self.standby_sinks
+                    or self._upload_sender is not None
+                ):
+                    return
+                if not self._standby_gaze_workers:
+                    self._standby_start_sec = float(sample_unix_sec)
+                    self._standby_gaze_workers = self._create_standby_workers()
+                start_sec = (
+                    self._standby_start_sec
+                    if self._standby_start_sec is not None
+                    else float(sample_unix_sec)
+                )
+                row = sample.to_brt1_row(float(sample_unix_sec) - start_sec)
+                self._ctx.standby_gaze_pushed += 1
+                for worker in self._standby_gaze_workers:
+                    worker.push_sample(now_mono, row)
                 return
-            elapsed_sec = float(sample_unix_sec) - (float(self._ctx.session_start_unix_ms) / 1000.0)
+            elapsed_sec = float(sample_unix_sec) - (
+                float(self._ctx.session_start_unix_ms) / 1000.0
+            )
             row = sample.to_brt1_row(elapsed_sec)
-            self._gaze_segment.append_sample(row)
             self._ctx.gaze_samples_recorded += 1
 
-            now_mono = time.monotonic()
-            if (
-                (now_mono - self._gaze_segment.started_mono) >= self.rollover_interval_sec
-                and self._gaze_segment.samples_count > 0
-            ):
-                job = _UploadJob(
-                    segment=self._gaze_segment,
-                    server_address=self._ctx.server_address,
-                    api_key=self._ctx.api_key,
-                    start_ms=self._ctx.session_start_unix_ms,
-                    tag=self._ctx.participant_tag,
-                )
-                self._gaze_seg_idx += 1
-                self._gaze_segment = self._new_gaze_segment(
-                    self._ctx.metadata, self._gaze_seg_idx
-                )
+            for pair in self._stream_workers:
+                pair.gaze.push_sample(now_mono, row)
+
+            if self._gaze_segment is not None:
+                self._gaze_segment.append_sample(row)
+                if (
+                    (now_mono - self._gaze_segment.started_mono) >= self.rollover_interval_sec
+                    and self._gaze_segment.samples_count > 0
+                ):
+                    job = _BackupJob(
+                        segment=self._gaze_segment,
+                        server_address=self._ctx.server_address,
+                        api_key=self._ctx.api_key,
+                        start_ms=self._ctx.session_start_unix_ms,
+                        tag=self._ctx.participant_tag,
+                    )
+                    self._gaze_seg_idx += 1
+                    self._gaze_segment = self._new_gaze_segment(
+                        self._ctx.metadata, self._gaze_seg_idx
+                    )
 
         if job is not None:
             self._enqueue_job(job)
 
     def on_face_sample(self, sample_unix_sec: float, sample: FaceSample) -> None:
-        """Append a `0x050e` shutter-timestamped `FaceSample` to the active `tobii_face` segment."""
-        job: Optional[_UploadJob] = None
+        """Stream a `0x050e` shutter-timestamped `FaceSample` live and record backup if enabled."""
+        job: Optional[_BackupJob] = None
 
         with self._lock:
-            if not self._ctx.active or self._face_segment is None:
+            if not self._ctx.active:
                 return
             elapsed_sec = float(sample_unix_sec) - (float(self._ctx.session_start_unix_ms) / 1000.0)
             row = sample.to_brt1_row(elapsed_sec)
-            self._face_segment.append_sample(row)
             self._ctx.face_samples_recorded += 1
-
             now_mono = time.monotonic()
-            if (
-                (now_mono - self._face_segment.started_mono) >= self.rollover_interval_sec
-                and self._face_segment.samples_count > 0
-            ):
-                job = _UploadJob(
-                    segment=self._face_segment,
-                    server_address=self._ctx.server_address,
-                    api_key=self._ctx.api_key,
-                    start_ms=self._ctx.session_start_unix_ms,
-                    tag=self._ctx.participant_tag,
-                )
-                self._face_seg_idx += 1
-                self._face_segment = self._new_face_segment(
-                    self._ctx.metadata, self._face_seg_idx
-                )
+
+            for pair in self._stream_workers:
+                pair.face.push_sample(now_mono, row)
+
+            if self._face_segment is not None:
+                self._face_segment.append_sample(row)
+                if (
+                    (now_mono - self._face_segment.started_mono) >= self.rollover_interval_sec
+                    and self._face_segment.samples_count > 0
+                ):
+                    job = _BackupJob(
+                        segment=self._face_segment,
+                        server_address=self._ctx.server_address,
+                        api_key=self._ctx.api_key,
+                        start_ms=self._ctx.session_start_unix_ms,
+                        tag=self._ctx.participant_tag,
+                    )
+                    self._face_seg_idx += 1
+                    self._face_segment = self._new_face_segment(
+                        self._ctx.metadata, self._face_seg_idx
+                    )
 
         if job is not None:
             self._enqueue_job(job)
 
-    def _enqueue_job(self, job: _UploadJob) -> None:
-        if self._upload_thread is not None and self._upload_thread.is_alive():
-            self._upload_queue.put(job)
+    def _enqueue_job(self, job: _BackupJob) -> None:
+        if self._backup_thread is not None and self._backup_thread.is_alive():
+            self._backup_queue.put(job)
         else:
-            self._execute_upload_job(job)
+            self._execute_backup_job(job)
 
-    def _upload_worker_loop(self) -> None:
+    def _backup_worker_loop(self) -> None:
         while True:
-            job = self._upload_queue.get()
+            job = self._backup_queue.get()
             try:
                 if job is None:
                     return
-                self._execute_upload_job(job)
+                self._execute_backup_job(job)
             finally:
-                self._upload_queue.task_done()
+                self._backup_queue.task_done()
 
     def _watchdog_loop(self) -> None:
         while self._running:
@@ -529,7 +1219,7 @@ class TobiiAuxSessionManager:
             if timed_out:
                 self.handle_stop({})
 
-    def _execute_upload_job(self, job: _UploadJob) -> None:
+    def _execute_backup_job(self, job: _BackupJob) -> None:
         segment = job.segment
         if segment.samples_count == 0:
             return
@@ -555,7 +1245,7 @@ class TobiiAuxSessionManager:
             except OSError:
                 pass
 
-        if not job.server_address:
+        if self._upload_sender is None or not job.server_address:
             return
 
         status_code, err_msg = self._upload_sender(
@@ -584,7 +1274,7 @@ class TobiiAuxSessionManager:
         headers = {
             'Content-Type': 'application/octet-stream',
             'Content-Encoding': 'br',
-            'User-Agent': 'BrBrDbTelemetry/1.0',
+            'User-Agent': DEFAULT_USER_AGENT,
         }
         if api_key:
             headers['X-API-Key'] = api_key

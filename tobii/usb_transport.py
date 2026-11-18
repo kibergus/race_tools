@@ -71,26 +71,71 @@ class BaseUsbTransport(ABC):
         """Read up to `max_len` bytes from a bulk IN endpoint; returns `b''` on timeout."""
 
 
-def get_windows_tobii_services_running() -> List[str]:
-    """Return names of currently running Windows Tobii background services."""
+def _is_windows_service_active(service_name: str) -> bool:
+    """Return True if a Windows service is running, starting, or stopping."""
     if sys.platform != 'win32':
-        return []
+        return False
+    try:
+        class _ServiceStatus(ctypes.Structure):
+            _fields_ = [
+                ('dwServiceType', wintypes.DWORD),
+                ('dwCurrentState', wintypes.DWORD),
+                ('dwControlsAccepted', wintypes.DWORD),
+                ('dwWin32ExitCode', wintypes.DWORD),
+                ('dwServiceSpecificExitCode', wintypes.DWORD),
+                ('dwCheckPoint', wintypes.DWORD),
+                ('dwWaitHint', wintypes.DWORD),
+            ]
+
+        advapi32 = ctypes.windll.advapi32
+        advapi32.OpenSCManagerW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        advapi32.OpenSCManagerW.restype = wintypes.HANDLE
+        advapi32.OpenServiceW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, wintypes.DWORD]
+        advapi32.OpenServiceW.restype = wintypes.HANDLE
+        advapi32.QueryServiceStatus.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ServiceStatus)]
+        advapi32.QueryServiceStatus.restype = wintypes.BOOL
+        advapi32.CloseServiceHandle.argtypes = [wintypes.HANDLE]
+        advapi32.CloseServiceHandle.restype = wintypes.BOOL
+
+        scm = advapi32.OpenSCManagerW(None, None, 0x0001)
+        if scm:
+            svc = None
+            try:
+                svc = advapi32.OpenServiceW(scm, service_name, 0x0004)
+                if not svc:
+                    return False
+                status = _ServiceStatus()
+                if advapi32.QueryServiceStatus(svc, ctypes.byref(status)):
+                    return int(status.dwCurrentState) in (2, 3, 4)
+                return False
+            finally:
+                if svc:
+                    advapi32.CloseServiceHandle(svc)
+                advapi32.CloseServiceHandle(scm)
+    except Exception:
+        pass
+
     try:
         proc = subprocess.run(
-            ['sc', 'query', 'state=', 'active'],
+            ['sc.exe', 'query', service_name],
             capture_output=True,
             text=True,
             timeout=3.0,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
-        out = proc.stdout or ''
-        running: List[str] = []
-        for svc in WINDOWS_TOBII_SERVICES:
-            if f'SERVICE_NAME: {svc}' in out:
-                running.append(svc)
-        return running
+        for line in (proc.stdout or '').splitlines():
+            if 'STATE' in line and any(code in line for code in (': 2 ', ': 3 ', ': 4 ')):
+                return True
+        return False
     except Exception:
+        return False
+
+
+def get_windows_tobii_services_running() -> List[str]:
+    """Return names of currently running Windows Tobii background services."""
+    if sys.platform != 'win32':
         return []
+    return [svc for svc in WINDOWS_TOBII_SERVICES if _is_windows_service_active(svc)]
 
 
 def toggle_windows_tobii_services_elevated(stop: bool) -> bool:
@@ -115,10 +160,11 @@ def toggle_windows_tobii_services_elevated(stop: bool) -> bool:
     if rc <= 32:
         return False
 
-    deadline = time.monotonic() + 8.0
+    deadline = time.monotonic() + 20.0
     while time.monotonic() < deadline:
         running = get_windows_tobii_services_running()
         if stop and not running:
+            time.sleep(0.3)
             return True
         if not stop and running:
             return True

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -25,6 +25,8 @@ class TurnBenchmark:
     exit_speed_ms: float
     straight_dists_m: np.ndarray
     straight_speeds_ms: np.ndarray
+    corner_dists_m: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
+    corner_speeds_ms: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,7 @@ class _ActiveCorner:
     lap_num: int
     t_start: float
     v_entry: float
+    samples: List[Tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -80,6 +83,7 @@ class _ActiveStraight:
     t_exit: float
     v_exit: float
     samples: List[Tuple[float, float]]
+    corner_samples: List[Tuple[float, float]] = field(default_factory=list)
 
 
 class BenchmarkStore:
@@ -323,6 +327,11 @@ class LiveFeedbackEngine:
         self._active_corners: Dict[int, _ActiveCorner] = {}
         self._active_straights: Dict[int, _ActiveStraight] = {}
 
+    @property
+    def current_dist_m(self) -> Optional[float]:
+        """Return the latest centerline lap distance in meters, if valid."""
+        return self._prev_dist
+
     def invalidate_active_passes(self) -> None:
         """Discard in-progress corner and straight trackers without clearing benchmarks."""
         self._active_corners.clear()
@@ -387,6 +396,13 @@ class LiveFeedbackEngine:
             s_arr = np.zeros(0, dtype=np.float64)
             v_arr = np.zeros(0, dtype=np.float64)
 
+        if straight.corner_samples:
+            c_s_arr = np.array([pt[0] for pt in straight.corner_samples], dtype=np.float64)
+            c_v_arr = np.array([pt[1] for pt in straight.corner_samples], dtype=np.float64)
+        else:
+            c_s_arr = np.zeros(0, dtype=np.float64)
+            c_v_arr = np.zeros(0, dtype=np.float64)
+
         candidate = TurnBenchmark(
             turn_index=turn.index,
             turn_name=turn.name,
@@ -397,6 +413,8 @@ class LiveFeedbackEngine:
             exit_speed_ms=straight.v_exit,
             straight_dists_m=s_arr,
             straight_speeds_ms=v_arr,
+            corner_dists_m=c_s_arr,
+            corner_speeds_ms=c_v_arr,
         )
         updated = self.benchmark_store.maybe_update(candidate)
         best = self.benchmark_store.get(turn.index)
@@ -465,12 +483,18 @@ class LiveFeedbackEngine:
                 is_live=is_live,
             )
 
+        corner_samples = list(corner.samples)
+        if turn.corner_length > 0.0:
+            if not corner_samples or turn.corner_length > corner_samples[-1][0] + 1e-4:
+                corner_samples.append((turn.corner_length, v_cross))
+
         straight = _ActiveStraight(
             lap_num=corner.lap_num,
             corner_time_s=corner_time_s,
             t_exit=t_cross,
             v_exit=v_cross,
             samples=[(0.0, v_cross)],
+            corner_samples=corner_samples,
         )
         if turn.straight_length <= 0.0:
             complete_event = self._finalize_straight(turn, straight, t_cross, is_live)
@@ -599,6 +623,7 @@ class LiveFeedbackEngine:
                     lap_num=cross_lap,
                     t_start=t_cross,
                     v_entry=v_cross,
+                    samples=[(0.0, v_cross)],
                 )
             elif kind == 'corner_end':
                 corner = self._active_corners.pop(turn_idx, None)
@@ -609,6 +634,13 @@ class LiveFeedbackEngine:
                     exit_events.append(exit_ev)
                     if comp_ev is not None:
                         complete_events.append(comp_ev)
+
+        for turn_idx, corner in list(self._active_corners.items()):
+            turn = self.track.turns[turn_idx]
+            rel_c = (curr_dist - turn.corner_start) % lap_len
+            if 0.0 < rel_c < turn.corner_length:
+                if not corner.samples or rel_c > corner.samples[-1][0] + 1e-4:
+                    corner.samples.append((rel_c, speed_val))
 
         for turn_idx, straight in list(self._active_straights.items()):
             turn = self.track.turns[turn_idx]

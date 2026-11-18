@@ -165,6 +165,13 @@ private:
   bool Finalize();
 };
 
+struct UploadTargetInfo {
+  std::string serverAddress;
+  std::string apiKey;
+  int maxRetries = 5;
+  int bufferDurationMinutes = 10;
+};
+
 // Lightweight command sink that signals session lifecycle and metadata to a local AUX app
 // (e.g., Spiker:bit) via HTTP POST without sending full telemetry lines.
 class CommandSink : public Sink {
@@ -172,6 +179,10 @@ public:
   CommandSink(const std::string& auxAddress,
               const std::string& uploadServerAddress,
               const std::string& uploadApiKey,
+              Logger& logger,
+              std::chrono::milliseconds heartbeatInterval = std::chrono::milliseconds(3000));
+  CommandSink(const std::string& auxAddress,
+              std::vector<UploadTargetInfo> uploadTargets,
               Logger& logger,
               std::chrono::milliseconds heartbeatInterval = std::chrono::milliseconds(3000));
   virtual ~CommandSink() override;
@@ -189,10 +200,15 @@ public:
                                       const std::string& uploadServerAddress,
                                       const std::string& uploadApiKey);
 
+  static std::string BuildPayloadJson(const std::string& state,
+                                      std::chrono::system_clock::time_point sessionStartTime,
+                                      const std::string& participantTag,
+                                      const Brt1SessionMetadata& metadata,
+                                      const std::vector<UploadTargetInfo>& uploadTargets);
+
 private:
   std::string auxAddress_;
-  std::string uploadServerAddress_;
-  std::string uploadApiKey_;
+  std::vector<UploadTargetInfo> uploadTargets_;
   Logger& logger_;
   std::chrono::milliseconds heartbeatInterval_;
 

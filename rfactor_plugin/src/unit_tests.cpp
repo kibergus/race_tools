@@ -1079,6 +1079,23 @@ void TestCommandSinkSignalling() {
   assert(payload.find("\"kart_number\":\"55\"") != std::string::npos);
   assert(payload.find("\"track_name\"") == std::string::npos);
   assert(payload.find("\"api_key\":\"key_rf2\"") != std::string::npos);
+  assert(payload.find("\"upload_targets\"") != std::string::npos);
+
+  std::vector<UploadTargetInfo> multiTargets = {
+      {"https://brbrdb.brbrkitten.com", "key_rf2", 5, 10},
+      {"http://127.0.0.1:18922", "", 0, 0},
+  };
+  std::string multiPayload = CommandSink::BuildPayloadJson(
+      "active", startTp, "KartDriver_55_Rowrah", meta, multiTargets);
+  assert(multiPayload.find("\"upload_target\":{\"api_key\":\"key_rf2\",\"server_address\":\"https://brbrdb.brbrkitten.com\"}") !=
+             std::string::npos ||
+         (multiPayload.find("\"upload_target\"") != std::string::npos &&
+          multiPayload.find("\"server_address\":\"https://brbrdb.brbrkitten.com\"") != std::string::npos));
+  assert(multiPayload.find("\"http://127.0.0.1:18922\"") != std::string::npos);
+  assert(multiPayload.find("\"max_retries\":0") != std::string::npos);
+  assert(multiPayload.find("\"buffer_duration_minutes\":0") != std::string::npos);
+  assert(multiPayload.find("\"max_retries\":5") != std::string::npos);
+  assert(multiPayload.find("\"buffer_duration_minutes\":10") != std::string::npos);
 
   {
     CommandSink sink("http://127.0.0.1:18998", "https://brbrdb.brbrkitten.com", "key_rf2",

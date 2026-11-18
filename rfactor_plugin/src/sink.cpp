@@ -606,8 +606,16 @@ CommandSink::CommandSink(const std::string& auxAddress,
                          Logger& logger,
                          std::chrono::milliseconds heartbeatInterval)
     : auxAddress_(auxAddress.empty() ? "http://127.0.0.1:18920" : auxAddress),
-      uploadServerAddress_(uploadServerAddress),
-      uploadApiKey_(uploadApiKey),
+      uploadTargets_{UploadTargetInfo{uploadServerAddress, uploadApiKey}},
+      logger_(logger),
+      heartbeatInterval_(heartbeatInterval) {}
+
+CommandSink::CommandSink(const std::string& auxAddress,
+                         std::vector<UploadTargetInfo> uploadTargets,
+                         Logger& logger,
+                         std::chrono::milliseconds heartbeatInterval)
+    : auxAddress_(auxAddress.empty() ? "http://127.0.0.1:18920" : auxAddress),
+      uploadTargets_(std::move(uploadTargets)),
       logger_(logger),
       heartbeatInterval_(heartbeatInterval) {}
 
@@ -630,6 +638,15 @@ std::string CommandSink::BuildPayloadJson(const std::string& state,
                                           const Brt1SessionMetadata& metadata,
                                           const std::string& uploadServerAddress,
                                           const std::string& uploadApiKey) {
+  std::vector<UploadTargetInfo> targets = {UploadTargetInfo{uploadServerAddress, uploadApiKey}};
+  return BuildPayloadJson(state, sessionStartTime, participantTag, metadata, targets);
+}
+
+std::string CommandSink::BuildPayloadJson(const std::string& state,
+                                          std::chrono::system_clock::time_point sessionStartTime,
+                                          const std::string& participantTag,
+                                          const Brt1SessionMetadata& metadata,
+                                          const std::vector<UploadTargetInfo>& uploadTargets) {
   nlohmann::json payload;
   payload["state"] = state;
   auto startMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -671,9 +688,25 @@ std::string CommandSink::BuildPayloadJson(const std::string& state,
   payload["metadata"] = metaObj;
 
   nlohmann::json targetObj = nlohmann::json::object();
-  targetObj["server_address"] = uploadServerAddress;
-  targetObj["api_key"] = uploadApiKey;
+  if (!uploadTargets.empty()) {
+    targetObj["server_address"] = uploadTargets.front().serverAddress;
+    targetObj["api_key"] = uploadTargets.front().apiKey;
+  } else {
+    targetObj["server_address"] = "";
+    targetObj["api_key"] = "";
+  }
   payload["upload_target"] = targetObj;
+
+  nlohmann::json targetsArr = nlohmann::json::array();
+  for (const auto& t : uploadTargets) {
+    targetsArr.push_back({
+      {"server_address", t.serverAddress},
+      {"api_key", t.apiKey},
+      {"max_retries", t.maxRetries},
+      {"buffer_duration_minutes", t.bufferDurationMinutes}
+    });
+  }
+  payload["upload_targets"] = targetsArr;
 
   return payload.dump();
 }
@@ -727,7 +760,7 @@ bool CommandSink::SendCommand(const std::string& endpoint, const std::string& st
   }
 
   std::string body = BuildPayloadJson(
-      state, sessionStartTime_, participantTag_, metadata_, uploadServerAddress_, uploadApiKey_);
+      state, sessionStartTime_, participantTag_, metadata_, uploadTargets_);
 
   HINTERNET hSession = nullptr;
   HINTERNET hConnect = nullptr;

@@ -13,6 +13,8 @@ import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Any, Dict, List, Optional
+import urllib.request
+import webbrowser
 
 if __package__ in (None, ''):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,8 +25,17 @@ from live_feedback.engine import (  # noqa: E402
     TurnCompleteEvent,
     TurnExitEvent,
 )
-from live_feedback.stream_server import DecodedSample, LiveStreamServer  # noqa: E402
-from live_feedback.track_loader import TrackLoader, resolve_track_origin  # noqa: E402
+from live_feedback.overlay import OverlayStateHub  # noqa: E402
+from live_feedback.stream_server import (  # noqa: E402
+    DecodedGazeSample,
+    DecodedSample,
+    LiveStreamServer,
+)
+from live_feedback.track_loader import (  # noqa: E402
+    DEFAULT_LOCAL_TRACKS_DIR,
+    TrackLoader,
+    resolve_track_origin,
+)
 
 
 DEFAULT_LISTEN_PORT = 18922
@@ -78,6 +89,10 @@ class UiSnapshot:
     last_exit_event: Optional[TurnExitEvent]
     turn_rows: List[TurnUiRow]
     last_packet_mono: float = 0.0
+    gaze_samples_received: int = 0
+    gaze_valid_received: int = 0
+    last_gaze_mono: float = 0.0
+    last_gaze_valid: bool = False
 
 
 def load_app_config(config_path: str = DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
@@ -119,12 +134,16 @@ class LiveFeedbackController:
         track_loader: Optional[TrackLoader] = None,
         audio: Optional[AudioCuePlayer] = None,
         min_cue_interval_s: float = 0.4,
+        overlay_hub: Optional[OverlayStateHub] = None,
     ) -> None:
         self.server_url = server_url.strip() or DEFAULT_SERVER_URL
         self.api_key = api_key.strip()
-        self.track_loader = track_loader or TrackLoader()
+        self.track_loader = track_loader or TrackLoader(
+            fallback_tracks_dir=DEFAULT_LOCAL_TRACKS_DIR
+        )
         self.audio = audio or AudioCuePlayer()
         self.min_cue_interval_s = float(min_cue_interval_s)
+        self.overlay_hub = overlay_hub or OverlayStateHub()
 
         self._lock = threading.Lock()
         self._active_session_key: Optional[str] = None
@@ -133,11 +152,15 @@ class LiveFeedbackController:
         self._track_status = 'Waiting for telemetry stream...'
         self._track_error = False
         self._samples_received = 0
+        self._gaze_samples_received = 0
+        self._gaze_valid_received = 0
         self._reconnect_count = 0
         self._last_exit_event: Optional[TurnExitEvent] = None
         self._turn_rows: Dict[int, TurnUiRow] = {}
         self._last_cue_wall_time = 0.0
         self._last_packet_mono = 0.0
+        self._last_gaze_mono = 0.0
+        self._last_gaze_valid = False
 
     def set_server_url(self, server_url: str) -> None:
         """Update the backend server URL used for track geometry lookups."""
@@ -164,6 +187,7 @@ class LiveFeedbackController:
             else:
                 self._turn_rows.clear()
             self._last_exit_event = None
+            self.overlay_hub.reset_benchmarks()
 
     def on_header(
         self,
@@ -238,6 +262,7 @@ class LiveFeedbackController:
                 self._samples_received = 0
                 self._reconnect_count = 0
                 self._last_exit_event = None
+            self.overlay_hub.set_track(engine.track if engine is not None else None)
 
     def _apply_exit_event(self, ev: TurnExitEvent) -> None:
         self._last_exit_event = ev
@@ -303,9 +328,68 @@ class LiveFeedbackController:
                         cues_to_play.append(ev.pred_total_delta_s)
                 for cev in comp_evs:
                     self._apply_complete_event(cev)
+                self.overlay_hub.on_vehicle_sample(
+                    time_s=s.time_s,
+                    curr_dist_m=engine.current_dist_m,
+                    speed_ms=s.speed_ms,
+                    throttle_pct=s.throttle_pct,
+                    brake_pct=s.brake_pct,
+                    clutch_pct=s.clutch_pct,
+                    lap_num=engine.lap_num,
+                    exit_events=exit_evs,
+                    complete_events=comp_evs,
+                    benchmark_store=engine.benchmark_store,
+                    is_live=s.is_live,
+                )
 
         for delta_s in cues_to_play:
             self.audio.play_turn_cue(delta_s)
+
+    def on_gaze_samples(
+        self,
+        _session_key: str,
+        samples: List[DecodedGazeSample],
+    ) -> None:
+        """Forward live `tobii_gaze` BRT1 samples to the OBS overlay hub."""
+        if not samples:
+            return
+        with self._lock:
+            self._last_gaze_mono = time.monotonic()
+            self._gaze_samples_received += len(samples)
+            for idx, gs in enumerate(samples):
+                if gs.gaze_valid:
+                    self._gaze_valid_received += 1
+                self._last_gaze_valid = bool(gs.gaze_valid)
+                self.overlay_hub.on_gaze_sample(
+                    gaze_x=gs.gaze_x,
+                    gaze_y=gs.gaze_y,
+                    gaze_valid=gs.gaze_valid,
+                    is_live=bool(gs.is_live or idx == len(samples) - 1),
+                )
+
+    def health_status(self) -> Dict[str, Any]:
+        """Return live telemetry and gaze ingestion diagnostics for `/health`."""
+        now = time.monotonic()
+        with self._lock:
+            telemetry_age_s = (
+                round(now - self._last_packet_mono, 3)
+                if self._last_packet_mono > 0.0
+                else None
+            )
+            gaze_age_s = (
+                round(now - self._last_gaze_mono, 3)
+                if self._last_gaze_mono > 0.0
+                else None
+            )
+            return {
+                'session_active': self._active_session_key is not None,
+                'telemetry_samples_received': self._samples_received,
+                'telemetry_age_s': telemetry_age_s,
+                'gaze_samples_received': self._gaze_samples_received,
+                'gaze_valid_received': self._gaze_valid_received,
+                'last_gaze_valid': self._last_gaze_valid,
+                'gaze_age_s': gaze_age_s,
+            }
 
     def snapshot(self) -> UiSnapshot:
         """Return a thread-safe copy of the current UI state."""
@@ -346,6 +430,10 @@ class LiveFeedbackController:
                 last_exit_event=self._last_exit_event,
                 turn_rows=rows,
                 last_packet_mono=self._last_packet_mono,
+                gaze_samples_received=self._gaze_samples_received,
+                gaze_valid_received=self._gaze_valid_received,
+                last_gaze_mono=self._last_gaze_mono,
+                last_gaze_valid=self._last_gaze_valid,
             )
 
 
@@ -363,6 +451,33 @@ def _format_exit_kmh(curr: Optional[float], ref: Optional[float]) -> str:
     return f'{curr:.1f} ({curr - ref:+.1f})'
 
 
+def _probe_live_feedback_health(port: int) -> bool:
+    """Return True if an existing Live Feedback HTTP server answers on `127.0.0.1:port/health`."""
+    try:
+        with urllib.request.urlopen(
+            f'http://127.0.0.1:{int(port)}/health',
+            timeout=0.5,
+        ) as resp:
+            return int(resp.status) == 200
+    except Exception:
+        return False
+
+
+def _request_local_shutdown(port: int) -> bool:
+    """Ask a loopback Live Feedback server on `port` to shut down and release the port."""
+    req = urllib.request.Request(
+        f'http://127.0.0.1:{int(port)}/api/shutdown',
+        data=b'{}',
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=0.8) as resp:
+            return int(resp.status) == 200
+    except Exception:
+        return False
+
+
 class LiveFeedbackApp:
     """Tkinter desktop UI for real-time turn-exit audio coaching."""
 
@@ -377,7 +492,7 @@ class LiveFeedbackApp:
     ) -> None:
         self.root = root
         self.root.title('BrBrDb Live Turn Feedback')
-        self.root.geometry('980x640')
+        self.root.geometry('1080x660')
         self.root.configure(bg=COLOR_BG)
 
         self._config_path = config_path
@@ -492,7 +607,7 @@ class LiveFeedbackApp:
         tk.Entry(
             top_bar,
             textvariable=self._server_var,
-            width=34,
+            width=26,
             bg=COLOR_SURFACE,
             fg=COLOR_TEXT,
             insertbackground=COLOR_TEXT,
@@ -519,6 +634,29 @@ class LiveFeedbackApp:
             padx=10,
             command=self._on_reset_benchmarks,
         ).pack(side=tk.RIGHT)
+
+        tk.Button(
+            top_bar,
+            text='Preview Overlay',
+            bg=COLOR_SURFACE,
+            fg=COLOR_ACCENT,
+            font=('Segoe UI', 9, 'bold'),
+            relief=tk.FLAT,
+            padx=10,
+            command=self._on_preview_overlay,
+        ).pack(side=tk.RIGHT, padx=(0, 6))
+
+        self._btn_copy_obs = tk.Button(
+            top_bar,
+            text='Copy OBS URL',
+            bg=COLOR_SURFACE,
+            fg=COLOR_GREEN,
+            font=('Segoe UI', 9, 'bold'),
+            relief=tk.FLAT,
+            padx=10,
+            command=self._on_copy_overlay_url,
+        )
+        self._btn_copy_obs.pack(side=tk.RIGHT, padx=(0, 6))
 
         # 2. Audio Controls Bar
         audio_bar = tk.Frame(self.root, bg=COLOR_SURFACE, padx=12, pady=8)
@@ -626,6 +764,15 @@ class LiveFeedbackApp:
         )
         self._lbl_listen.pack(side=tk.LEFT, padx=(0, 16))
 
+        self._lbl_gaze = tk.Label(
+            status_row1,
+            text='○ Gaze Standby',
+            bg=COLOR_BG,
+            fg=COLOR_MUTED,
+            font=('Segoe UI', 9, 'bold'),
+        )
+        self._lbl_gaze.pack(side=tk.LEFT, padx=(0, 16))
+
         self._lbl_session = tk.Label(
             status_row1,
             text='No active session',
@@ -719,19 +866,53 @@ class LiveFeedbackApp:
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self._ui_ready = True
 
+    def _on_remote_shutdown(self) -> None:
+        self._closing = True
+        srv = self._stream_server
+        self._stream_server = None
+        if srv is not None:
+            srv.stop()
+        try:
+            self.root.after(0, self._on_close)
+        except Exception:
+            pass
+
     def _start_stream_server(self, port: int, raise_on_error: bool = False) -> None:
         if self._stream_server is not None:
             self._stream_server.stop()
             self._stream_server = None
         self._bound_listen_port = None
-        try:
-            srv = LiveStreamServer(
+
+        def _make_server() -> LiveStreamServer:
+            return LiveStreamServer(
                 host='127.0.0.1',
                 port=port,
                 on_header=self._controller.on_header,
                 on_samples=self._controller.on_samples,
+                on_gaze_samples=self._controller.on_gaze_samples,
+                overlay_hub=self._controller.overlay_hub,
+                status_provider=self._controller.health_status,
+                on_shutdown_request=self._on_remote_shutdown,
             )
-            srv.start()
+
+        try:
+            srv = _make_server()
+            try:
+                srv.start()
+            except OSError:
+                if port > 0 and _probe_live_feedback_health(port) and _request_local_shutdown(port):
+                    deadline = time.monotonic() + 1.5
+                    while True:
+                        time.sleep(0.15)
+                        srv = _make_server()
+                        try:
+                            srv.start()
+                            break
+                        except OSError:
+                            if time.monotonic() >= deadline:
+                                raise
+                else:
+                    raise
             self._stream_server = srv
             self._bound_listen_port = srv.bound_port
             self._lbl_listen.configure(
@@ -797,6 +978,20 @@ class LiveFeedbackApp:
     def _on_reset_benchmarks(self) -> None:
         self._controller.reset_benchmarks()
         self._render_snapshot()
+
+    def _overlay_base_url(self) -> str:
+        port = self._bound_listen_port or int(self._cfg.get('port', DEFAULT_LISTEN_PORT))
+        return f'http://127.0.0.1:{port}/overlay'
+
+    def _on_copy_overlay_url(self) -> None:
+        url = self._overlay_base_url()
+        self.root.clipboard_clear()
+        self.root.clipboard_append(url)
+        self._btn_copy_obs.configure(text='Copied!')
+        self.root.after(1500, lambda: self._btn_copy_obs.configure(text='Copy OBS URL'))
+
+    def _on_preview_overlay(self) -> None:
+        webbrowser.open(self._overlay_base_url())
 
     def _bind_visibility_events(self) -> None:
         self.root.bind('<Unmap>', self._on_unmap)
@@ -875,6 +1070,34 @@ class LiveFeedbackApp:
                     ),
                     fg=COLOR_ACCENT,
                 )
+
+        if (
+            snap.last_gaze_mono > 0.0
+            and (time.monotonic() - snap.last_gaze_mono) < 3.0
+        ):
+            if snap.last_gaze_valid:
+                self._lbl_gaze.configure(
+                    text=f'● Gaze Tracking ({snap.gaze_valid_received})',
+                    fg=COLOR_GREEN,
+                )
+            else:
+                self._lbl_gaze.configure(
+                    text=(
+                        '● Gaze Connected — No Eyes'
+                        f' ({snap.gaze_samples_received})'
+                    ),
+                    fg=COLOR_YELLOW,
+                )
+        else:
+            standby_txt = (
+                f'○ Gaze Standby (rx: {snap.gaze_samples_received})'
+                if snap.gaze_samples_received > 0
+                else '○ Gaze Standby'
+            )
+            self._lbl_gaze.configure(
+                text=standby_txt,
+                fg=COLOR_MUTED,
+            )
 
         if snap.session_active:
             cls_part = f' / {snap.class_name}' if snap.class_name else ''

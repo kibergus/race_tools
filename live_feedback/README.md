@@ -22,7 +22,27 @@ Add a second `"http"` sink after your primary remote upload sink:
 ```
 
 - Keeping `"max_retries": 0` and `"buffer_duration_minutes": 0` ensures zero RAM buffering or shutdown delay when the Live Feedback app is not running.
-- Keeping your remote upload sink first preserves it as the primary upload target for `CommandSink` AUX apps.
+- Keeping your remote upload sink first preserves it as the primary upload target for `CommandSink` AUX apps; `CommandSink` automatically forwards **all** enabled `"http"` sinks (`upload_targets`) so `tobii` streams live gaze & face telemetry to both `brbrdb` and `live_feedback` simultaneously.
+
+## OBS Studio Virtual Camera & Google Meet Overlay
+
+`live_feedback` serves a transparent `1920x1080` HTML5 telemetry HUD at **`http://127.0.0.1:18922/overlay`** fed in real time via SSE (`/events`) from both the simulator vehicle stream and Tobii `tobii_gaze`:
+
+- **Gaze Reticle**: Calibrated 1:1 normalized screen gaze marker (disappears immediately on blink or tracking loss).
+- **Lap & All-Turns Timing Card**: Live lap time, best/last lap, delta vs. session best lap, and per-turn times (`LAST`, `BEST`, `DELTA`) for all turns on the track.
+- **Pedals Plot**: Unlabeled 5-second scrolling Throttle and Brake plot (`0–100%`).
+- **Full-Lap Speed Plot (`0 .. lap_length`, top)**: Unlabeled, legend-free full-lap speed trace (`x=0, y=0`) showing Current Lap vs. Best Lap ghost and per-turn Best Turn references with track turn labels.
+
+### Setup Steps
+1. Start **`tobii`** (`python -m tobii.main`) and **`live_feedback`** (`python -m live_feedback.main`).
+   - You can open the live overlay in a browser via **`Preview Overlay`** or `http://127.0.0.1:18922/overlay` (query toggles: `units=kmh|mph`, `gaze=0|1`, `trail=0|1`).
+2. In **OBS Studio**:
+   - Set **Base (Canvas)** and **Output (Scaled)** resolution to `1920x1080` (`60 FPS`).
+   - Add **Game Capture** targeting `rFactor2.exe`.
+   - Above it, add a **Browser** source pointing to `http://127.0.0.1:18922/overlay` (`Width: 1920`, `Height: 1080`, `FPS: 60`, check *Refresh browser when scene becomes active*).
+   - Click **Start Virtual Camera**.
+3. In **Google Meet**:
+   - **Settings → Video → Camera**: select **`OBS Virtual Camera`** and set send resolution to High Definition. *(Local self-view is mirrored by Meet, while remote viewers see text unmirrored; for full 1080p sharpness + game audio, use OBS **Windowed Projector (Preview)** + Meet **Present → A window**.)*
 
 ## Running
 

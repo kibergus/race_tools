@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
+import os
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.error
@@ -17,6 +18,11 @@ from race_tools import assetto_corsa, rfactor, track_data
 
 
 DEFAULT_USER_AGENT = 'BrBrDbTelemetry/1.0'
+DEFAULT_LOCAL_TRACKS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'data',
+    'tracks',
+)
 
 
 @dataclass(frozen=True)
@@ -171,17 +177,65 @@ def parse_track_payload(raw: Dict[str, Any], fallback_name: str = '') -> TrackDa
     )
 
 
-class TrackLoader:
-    """Fetches and caches track definitions from the BrBrDb backend."""
+def find_local_track_data(
+    tracks_dir: Optional[str],
+    track_name: str,
+    require_turns: bool = True,
+) -> Optional[TrackData]:
+    """Search `tracks_dir` for a JSON track layout matching `track_name` or its aliases."""
+    if not tracks_dir or not os.path.isdir(tracks_dir):
+        return None
+    target = track_name.strip().lower()
+    if not target:
+        return None
 
-    def __init__(self) -> None:
+    for entry in sorted(os.listdir(tracks_dir)):
+        if not entry.lower().endswith('.json'):
+            continue
+        stem = entry[:-5].strip().lower()
+        fpath = os.path.join(tracks_dir, entry)
+        try:
+            with open(fpath, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        if require_turns and not raw.get('turns'):
+            continue
+
+        candidates = {stem, stem.replace('_', ' ')}
+        if raw.get('track_name'):
+            candidates.add(str(raw['track_name']).strip().lower())
+        for alias in raw.get('aliases') or []:
+            if alias is not None:
+                candidates.add(str(alias).strip().lower())
+
+        if target in candidates:
+            return parse_track_payload(raw, fallback_name=track_name)
+    return None
+
+
+class TrackLoader:
+    """Fetches and caches track definitions from the BrBrDb backend or local fallback."""
+
+    def __init__(self, fallback_tracks_dir: Optional[str] = None) -> None:
         self._lock = threading.Lock()
         self._cache: Dict[Tuple[str, str], TrackData] = {}
+        self._fallback_tracks_dir = fallback_tracks_dir
 
     def clear_cache(self) -> None:
         """Clear cached track definitions."""
         with self._lock:
             self._cache.clear()
+
+    def _cache_track(self, base_url: str, norm_name: str, parsed: TrackData) -> TrackData:
+        cache_key = (base_url, norm_name)
+        canonical_key = (base_url, parsed.track_name.strip().lower())
+        with self._lock:
+            self._cache[cache_key] = parsed
+            self._cache[canonical_key] = parsed
+        return parsed
 
     def fetch(
         self,
@@ -200,6 +254,13 @@ class TrackLoader:
         if cached is not None:
             return cached
 
+        if self._fallback_tracks_dir and not api_key.strip():
+            local_td = find_local_track_data(
+                self._fallback_tracks_dir, track_name, require_turns=True
+            )
+            if local_td is not None:
+                return self._cache_track(base_url, norm_name, local_td)
+
         url = f'{base_url}/api/track_data?track={quote(track_name)}'
         headers: Dict[str, str] = {
             'Accept': 'application/json',
@@ -213,6 +274,13 @@ class TrackLoader:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 payload = json.loads(resp.read().decode('utf-8'))
         except urllib.error.HTTPError as exc:
+            local_td = find_local_track_data(
+                self._fallback_tracks_dir, track_name, require_turns=True
+            ) or find_local_track_data(
+                self._fallback_tracks_dir, track_name, require_turns=False
+            )
+            if local_td is not None:
+                return self._cache_track(base_url, norm_name, local_td)
             raw_err = exc.read(512).decode('utf-8', errors='replace').strip()
             detail = raw_err
             if raw_err:
@@ -228,13 +296,18 @@ class TrackLoader:
             if detail:
                 msg = f'{msg}: {detail}'
             raise RuntimeError(msg) from exc
+        except Exception:
+            local_td = find_local_track_data(
+                self._fallback_tracks_dir, track_name, require_turns=True
+            ) or find_local_track_data(
+                self._fallback_tracks_dir, track_name, require_turns=False
+            )
+            if local_td is not None:
+                return self._cache_track(base_url, norm_name, local_td)
+            raise
 
         parsed = parse_track_payload(payload, fallback_name=track_name)
-        canonical_key = (base_url, parsed.track_name.strip().lower())
-        with self._lock:
-            self._cache[cache_key] = parsed
-            self._cache[canonical_key] = parsed
-        return parsed
+        return self._cache_track(base_url, norm_name, parsed)
 
 
 def _parse_float_meta(meta_lower: Dict[str, Any], *keys: str) -> Optional[float]:

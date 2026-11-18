@@ -24,7 +24,11 @@ from tobii.calibration import (  # noqa: E402
     solve_display_area_3d,
 )
 from tobii.device_client import TobiiDirectClient, UiTelemetrySnapshot  # noqa: E402
-from tobii.uploader import TobiiAuxSessionManager  # noqa: E402
+from tobii.uploader import (  # noqa: E402
+    TobiiAuxSessionManager,
+    UploadSinkConfig,
+    parse_sink_spec,
+)
 from tobii.usb_transport import (  # noqa: E402
     BaseUsbTransport,
     UsbAccessDeniedError,
@@ -998,6 +1002,8 @@ class TobiiStudioApp:
         aux_port: int = 18921,
         ir_fps: float = 30.0,
         backup_dir: Optional[str] = None,
+        extra_sinks: Optional[Sequence[UploadSinkConfig]] = None,
+        standby_sinks: Optional[Sequence[UploadSinkConfig]] = None,
         model_path: Optional[str] = None,
         calibration_path: Optional[str] = None,
         auto_connect: bool = True,
@@ -1026,6 +1032,9 @@ class TobiiStudioApp:
             host='127.0.0.1',
             port=aux_port,
             backup_dir=backup_dir,
+            extra_sinks=extra_sinks,
+            standby_sinks=standby_sinks,
+            on_shutdown_request=self._on_remote_shutdown,
         )
         self._client = TobiiDirectClient(
             on_gaze_sample=self._session_mgr.on_gaze_sample,
@@ -1475,20 +1484,32 @@ class TobiiStudioApp:
         if ctx.active:
             track = ctx.metadata.get('Track name', 'Track')
             driver = ctx.metadata.get('Driver name', 'Driver')
+            n_sinks = len(ctx.upload_targets)
+            sink_note = f' | {n_sinks} sink{"s" if n_sinks != 1 else ""}'
             self._lbl_session.configure(
                 text=(
-                    f'● LIVE SESSION: {track} ({driver}) | '
+                    f'● LIVE STREAMING{sink_note}: {track} ({driver}) | '
                     f'Gaze: {ctx.gaze_samples_recorded} | Face: {ctx.face_samples_recorded} | '
-                    f'Uploaded: {ctx.segments_uploaded} seg ({ctx.bytes_uploaded // 1024} KB)'
+                    f'Streamed: {ctx.segments_uploaded} seg ({ctx.bytes_uploaded // 1024} KB)'
                     f'{err_suffix}'
                 ),
                 fg=COLOR_RED if ctx.last_upload_error else COLOR_GREEN,
             )
         else:
+            live_suffix = ''
+            if self._session_mgr.standby_sinks:
+                target_addr = self._session_mgr.standby_sinks[0].server_address
+                target_host = target_addr.replace('http://', '').replace('https://', '')
+                if ctx.standby_connected:
+                    live_suffix = (
+                        f' | Live -> {target_host} ● ({ctx.standby_gaze_pushed})'
+                    )
+                else:
+                    live_suffix = f' | Live -> {target_host} ○ waiting'
             self._lbl_session.configure(
                 text=(
-                    f'○ AUX Standby (127.0.0.1:{self._session_mgr.bound_port}) | '
-                    f'Uploaded: {ctx.segments_uploaded} seg{err_suffix}'
+                    f'○ AUX Standby (127.0.0.1:{self._session_mgr.bound_port})'
+                    f'{live_suffix} | Uploaded: {ctx.segments_uploaded} seg{err_suffix}'
                 ),
                 fg=COLOR_RED if ctx.last_upload_error else COLOR_ACCENT,
             )
@@ -1868,6 +1889,15 @@ class TobiiStudioApp:
             ):
                 c.create_line(*seg, fill=COLOR_YELLOW, width=1.5)
 
+    def _on_remote_shutdown(self) -> None:
+        self._closing = True
+        self._client.stop()
+        self._session_mgr.stop()
+        try:
+            self.root.after(0, self._on_close)
+        except Exception:
+            pass
+
     def _on_close(self) -> None:
         self._closing = True
         if self._active_cal_overlay is not None:
@@ -1915,11 +1945,34 @@ def main() -> None:
         help='Optional custom JSON path for saved screen calibration profile',
     )
     parser.add_argument(
+        '--sink',
+        action='append',
+        default=[],
+        help='Additional HTTP BRT1 sink URL (repeatable, e.g. http://127.0.0.1:18922)',
+    )
+    parser.add_argument(
+        '--live-sink',
+        default='http://127.0.0.1:18922',
+        help='Local live-feedback BRT1 sink for standby gaze streaming',
+    )
+    parser.add_argument(
+        '--no-live-sink',
+        action='store_true',
+        help='Disable default local standby gaze streaming to live_feedback',
+    )
+    parser.add_argument(
         '--no-auto-connect',
         action='store_true',
         help='Do not automatically connect to USB hardware on startup',
     )
     args = parser.parse_args()
+
+    extra_sinks = [parse_sink_spec(s) for s in args.sink if str(s).strip()]
+    standby_sinks = (
+        []
+        if args.no_live_sink or not str(args.live_sink).strip()
+        else [parse_sink_spec(args.live_sink)]
+    )
 
     _enable_windows_dpi_awareness()
     root = tk.Tk()
@@ -1928,6 +1981,8 @@ def main() -> None:
         aux_port=args.aux_port,
         ir_fps=args.ir_fps,
         backup_dir=args.backup_dir,
+        extra_sinks=extra_sinks,
+        standby_sinks=standby_sinks,
         model_path=args.model_path,
         calibration_path=args.calibration_path,
         auto_connect=not args.no_auto_connect,

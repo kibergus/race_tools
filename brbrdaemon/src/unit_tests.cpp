@@ -957,6 +957,22 @@ void TestCommandSinkSignalling() {
   TEST_ASSERT(payload.find("\"kart_number\":\"42\"") != std::string::npos, "Payload must contain kart_number");
   TEST_ASSERT(payload.find("\"track_name\"") == std::string::npos, "Payload must not duplicate snake_case track_name");
   TEST_ASSERT(payload.find("\"api_key\":\"api_key_xyz\"") != std::string::npos, "Payload must contain upload_target api_key");
+  TEST_ASSERT(payload.find("\"upload_targets\"") != std::string::npos, "Payload must contain upload_targets");
+
+  std::vector<UploadTargetInfo> multiTargets = {
+      {"https://brbrdb.brbrkitten.com", "api_key_xyz", 5, 10},
+      {"http://127.0.0.1:18922", "", 0, 0},
+  };
+  std::string multiPayload = CommandSink::BuildPayloadJson(
+      "active", startTp, "NeuroDriver_GT3_Monza", meta, multiTargets);
+  TEST_ASSERT(multiPayload.find("\"server_address\":\"https://brbrdb.brbrkitten.com\"") != std::string::npos,
+              "Payload must preserve primary server_address");
+  TEST_ASSERT(multiPayload.find("\"http://127.0.0.1:18922\"") != std::string::npos,
+              "Payload must contain secondary local target");
+  TEST_ASSERT(multiPayload.find("\"max_retries\":0") != std::string::npos,
+              "Payload must include per-target max_retries");
+  TEST_ASSERT(multiPayload.find("\"buffer_duration_minutes\":0") != std::string::npos,
+              "Payload must include per-target buffer_duration_minutes");
 
   // Also verify CommandSink against an unreachable local port does not block or throw
   {

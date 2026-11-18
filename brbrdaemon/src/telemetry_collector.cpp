@@ -522,15 +522,26 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
                     SanitizeFilename(fullTrackName) + "_" +
                     SanitizeFilename(sessionType);
 
-  // Resolve primary HTTP sink target so CommandSink can pass upload_target to AUX apps
-  std::string primaryUploadServer = "https://brbrdb.brbrkitten.com";
-  std::string primaryUploadApiKey = "";
+  // Resolve enabled HTTP sink targets so CommandSink can pass upload_targets to AUX apps
+  std::vector<UploadTargetInfo> uploadTargets;
   for (const auto& s : config_.sinks) {
-    if (s.type == "http") {
-      if (!s.serverAddress.empty()) primaryUploadServer = s.serverAddress;
-      if (!s.apiKey.empty()) primaryUploadApiKey = s.apiKey;
-      if (s.enabled) break;
+    if (s.type == "http" && s.enabled && !s.serverAddress.empty()) {
+      uploadTargets.push_back(UploadTargetInfo{
+          s.serverAddress, s.apiKey, s.maxRetries, s.bufferDurationMinutes});
     }
+  }
+  if (uploadTargets.empty()) {
+    UploadTargetInfo fallback{"https://brbrdb.brbrkitten.com", "", 5, 10};
+    for (const auto& s : config_.sinks) {
+      if (s.type == "http") {
+        if (!s.serverAddress.empty()) fallback.serverAddress = s.serverAddress;
+        if (!s.apiKey.empty()) fallback.apiKey = s.apiKey;
+        fallback.maxRetries = s.maxRetries;
+        fallback.bufferDurationMinutes = s.bufferDurationMinutes;
+        break;
+      }
+    }
+    uploadTargets.push_back(std::move(fallback));
   }
 
   // Initialize Sinks
@@ -569,7 +580,7 @@ void TelemetryCollector::StartSession(const SPageFilePhysics& physics,
           sessionQueue_->reader()));
     } else if (sinkConf.type == "command") {
       sinkWorkers_.push_back(std::make_unique<SinkWorker>(
-          std::make_unique<CommandSink>(sinkConf.serverAddress, primaryUploadServer, primaryUploadApiKey, logger_),
+          std::make_unique<CommandSink>(sinkConf.serverAddress, uploadTargets, logger_),
           sessionQueue_->reader()));
     }
   }
