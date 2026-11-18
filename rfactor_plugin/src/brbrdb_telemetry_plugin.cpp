@@ -773,10 +773,30 @@ void BrBrDbTelemetryPlugin::ExtractTelemetryData(
   double rpsRL = info.mWheel[2].mRotation / two_pi;
   double rpsRR = info.mWheel[3].mRotation / two_pi;
 
-  double slidePctFL = info.mWheel[0].mGripFract * 100.0;
-  double slidePctFR = info.mWheel[1].mGripFract * 100.0;
-  double slidePctRL = info.mWheel[2].mGripFract * 100.0;
-  double slidePctRR = info.mWheel[3].mGripFract * 100.0;
+  auto toSlidePct = [](double gripFract) -> double {
+    if (std::isnan(gripFract)) return std::numeric_limits<double>::quiet_NaN();
+    double pct = (1.0 - gripFract) * 100.0;
+    if (pct < 0.0) return 0.0;
+    if (pct > 100.0) return 100.0;
+    return pct;
+  };
+  double slidePctFL = toSlidePct(info.mWheel[0].mGripFract);
+  double slidePctFR = toSlidePct(info.mWheel[1].mGripFract);
+  double slidePctRL = toSlidePct(info.mWheel[2].mGripFract);
+  double slidePctRR = toSlidePct(info.mWheel[3].mGripFract);
+
+  auto kelvinToCelsius = [](double tempK) -> double {
+    if (std::isnan(tempK)) return std::numeric_limits<double>::quiet_NaN();
+    return tempK - 273.15;
+  };
+  double surfTempFL = kelvinToCelsius(info.mWheel[0].mTemperature[1]);
+  double surfTempFR = kelvinToCelsius(info.mWheel[1].mTemperature[1]);
+  double surfTempRL = kelvinToCelsius(info.mWheel[2].mTemperature[1]);
+  double surfTempRR = kelvinToCelsius(info.mWheel[3].mTemperature[1]);
+  double carcassTempFL = kelvinToCelsius(info.mWheel[0].mTireCarcassTemperature);
+  double carcassTempFR = kelvinToCelsius(info.mWheel[1].mTireCarcassTemperature);
+  double carcassTempRL = kelvinToCelsius(info.mWheel[2].mTireCarcassTemperature);
+  double carcassTempRR = kelvinToCelsius(info.mWheel[3].mTireCarcassTemperature);
 
   double trackTemp = cachedTrackTemp_.load();
   double ambientTemp = cachedAmbientTemp_.load();
@@ -837,14 +857,14 @@ void BrBrDbTelemetryPlugin::ExtractTelemetryData(
     ambientTemp,
     raining,
     avgWetness,
-    info.mWheel[0].mTemperature[1],
-    info.mWheel[1].mTemperature[1],
-    info.mWheel[2].mTemperature[1],
-    info.mWheel[3].mTemperature[1],
-    info.mWheel[0].mTireCarcassTemperature,
-    info.mWheel[1].mTireCarcassTemperature,
-    info.mWheel[2].mTireCarcassTemperature,
-    info.mWheel[3].mTireCarcassTemperature
+    surfTempFL,
+    surfTempFR,
+    surfTempRL,
+    surfTempRR,
+    carcassTempFL,
+    carcassTempFR,
+    carcassTempRL,
+    carcassTempRR
   };
 
   std::stringstream ss;
@@ -882,7 +902,7 @@ void BrBrDbTelemetryPlugin::ExtractTelemetryData(
   ss << info.mWheel[0].mLongitudinalForce << "," << info.mWheel[1].mLongitudinalForce << ","
      << info.mWheel[2].mLongitudinalForce << "," << info.mWheel[3].mLongitudinalForce << ",";
 
-  // Wheels Slide Pct FL, Slide Pct FR, Slide Pct RL, Slide Pct RR (mGripFract * 100)
+  // Wheels Slide Pct FL, Slide Pct FR, Slide Pct RL, Slide Pct RR (inverted & clamped (1 - mGripFract) * 100)
   ss << slidePctFL << "," << slidePctFR << "," << slidePctRL << "," << slidePctRR << ","
      << static_cast<int>(flag) << ",";
 
@@ -892,15 +912,15 @@ void BrBrDbTelemetryPlugin::ExtractTelemetryData(
      << raining << ","
      << avgWetness << ",";
 
-  // Tyre temperatures (Kelvin): centre surface + carcass per wheel
-  ss << info.mWheel[0].mTemperature[1] << ","
-     << info.mWheel[1].mTemperature[1] << ","
-     << info.mWheel[2].mTemperature[1] << ","
-     << info.mWheel[3].mTemperature[1] << ","
-     << info.mWheel[0].mTireCarcassTemperature << ","
-     << info.mWheel[1].mTireCarcassTemperature << ","
-     << info.mWheel[2].mTireCarcassTemperature << ","
-     << info.mWheel[3].mTireCarcassTemperature;
+  // Tyre temperatures (Celsius): centre surface + carcass per wheel
+  ss << surfTempFL << ","
+     << surfTempFR << ","
+     << surfTempRL << ","
+     << surfTempRR << ","
+     << carcassTempFL << ","
+     << carcassTempFR << ","
+     << carcassTempRL << ","
+     << carcassTempRR;
 
   if (includeCamera) {
     // Only emit valid camera pose when viewing an attached driving camera (TV cockpit=0, cockpit=1, nosecam=2)

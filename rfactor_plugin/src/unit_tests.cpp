@@ -1304,6 +1304,12 @@ void TestCameraTelemetryEndToEnd() {
     telem.mOri[2].Set(0.0, 0.0, 1.0);
     std::strcpy(telem.mVehicleName, "KSP Cadet #7");
     std::strcpy(telem.mTrackName, "Buckmore Park");
+    telem.mWheel[0].mGripFract = 0.97;
+    telem.mWheel[1].mGripFract = 0.25;
+    telem.mWheel[2].mGripFract = 1.0005;   // overshoot -> clamps to 0.0%
+    telem.mWheel[3].mGripFract = -0.0004;  // overshoot -> clamps to 100.0%
+    telem.mWheel[0].mTemperature[1] = 323.15;
+    telem.mWheel[0].mTireCarcassTemperature = 318.15;
     plugin.UpdateTelemetry(telem);
 
     // 2. Switch to Trackside camera (mCameraType = 4) -> camera channels must become NaN
@@ -1357,6 +1363,12 @@ void TestCameraTelemetryEndToEnd() {
     TEST_REQUIRE(IsClose(rec["Local Cam Quat Y"], 0.0, 1e-3));
     TEST_REQUIRE(IsClose(rec["Local Cam Quat Z"], -0.70710678, 1e-3));
     TEST_REQUIRE(IsClose(rec["Local Cam Quat W"], 0.70710678, 1e-3));
+    TEST_REQUIRE(IsClose(rec["Slide Pct FL"], 3.0, 0.1));
+    TEST_REQUIRE(IsClose(rec["Slide Pct FR"], 75.0, 0.1));
+    TEST_REQUIRE(IsClose(rec["Slide Pct RL"], 0.0, 0.1));
+    TEST_REQUIRE(IsClose(rec["Slide Pct RR"], 100.0, 0.1));
+    TEST_REQUIRE(IsClose(rec["Tyre Surf Temp FL"], 50.0, 0.01));
+    TEST_REQUIRE(IsClose(rec["Tyre Carcass Temp FL"], 45.0, 0.01));
 
     // Sample 2: trackside camera -> NaN
     TEST_REQUIRE(decoder.Step(rec, err) == Brt1StreamDecoder::StepResult::SampleDecoded);

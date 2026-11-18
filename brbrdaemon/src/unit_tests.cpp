@@ -310,6 +310,10 @@ void TestFormatTelemetryLine() {
   TEST_ASSERT(std::abs(values[19] - 0.0) < 1e-5, "North qz == 0");
   TEST_ASSERT(std::abs(values[20] - 1.0) < 1e-5, "North qw == 1");
 
+  // Verify tyre temperatures are emitted in Celsius (matching phys.tyreTempM=80, tyreCoreTemperature=85)
+  TEST_ASSERT(std::abs(values[54] - 80.0) < 1e-5, "Tyre Surf Temp FL should be 80.0 C");
+  TEST_ASSERT(std::abs(values[58] - 85.0) < 1e-5, "Tyre Carcass Temp FL should be 85.0 C");
+
   // heading = -PI / 2 (facing +X Game East) -> (0, 0, +0.70710678, +0.70710678)
   phys.heading = static_cast<float>(-kPi / 2.0);
   TelemetryCollector::ExtractTelemetryData(phys, ug, realTime, steadyStart, steadyNow, values, csvOut);

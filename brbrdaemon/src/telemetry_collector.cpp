@@ -366,20 +366,20 @@ void TelemetryCollector::ExtractTelemetryData(
 
   const double nanVal = std::numeric_limits<double>::quiet_NaN();
 
-  auto getTempK = [](float tempC) -> double {
+  auto getTempC = [](float tempC) -> double {
     if (std::isnan(tempC) || tempC < -273.15f) return std::numeric_limits<double>::quiet_NaN();
-    return static_cast<double>(tempC) + 273.15;
+    return static_cast<double>(tempC);
   };
 
-  double surfTempFL = getTempK(physics.tyreTempM[0]);
-  double surfTempFR = getTempK(physics.tyreTempM[1]);
-  double surfTempRL = getTempK(physics.tyreTempM[2]);
-  double surfTempRR = getTempK(physics.tyreTempM[3]);
+  double surfTempFL = getTempC(physics.tyreTempM[0]);
+  double surfTempFR = getTempC(physics.tyreTempM[1]);
+  double surfTempRL = getTempC(physics.tyreTempM[2]);
+  double surfTempRR = getTempC(physics.tyreTempM[3]);
 
-  double coreTempFL = getTempK(physics.tyreCoreTemperature[0]);
-  double coreTempFR = getTempK(physics.tyreCoreTemperature[1]);
-  double coreTempRL = getTempK(physics.tyreCoreTemperature[2]);
-  double coreTempRR = getTempK(physics.tyreCoreTemperature[3]);
+  double coreTempFL = getTempC(physics.tyreCoreTemperature[0]);
+  double coreTempFR = getTempC(physics.tyreCoreTemperature[1]);
+  double coreTempRL = getTempC(physics.tyreCoreTemperature[2]);
+  double coreTempRR = getTempC(physics.tyreCoreTemperature[3]);
 
   outValues = {
     timeSeconds,
